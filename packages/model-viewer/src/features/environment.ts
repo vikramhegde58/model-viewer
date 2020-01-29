@@ -16,7 +16,7 @@
 import {property} from 'lit-element';
 import {Color, Texture} from 'three';
 
-import ModelViewerElementBase, {$container, $isInRenderTree, $needsRender, $onModelLoad, $progressTracker, $renderer, $scene} from '../model-viewer-base.js';
+import ModelViewerElementBase, {$connectRenderer, $container, $disconnectRenderer, $isInRenderTree, $needsRender, $onModelLoad, $progressTracker, $renderer, $scene} from '../model-viewer-base.js';
 import {Constructor, deserializeUrl} from '../utilities.js';
 
 const DEFAULT_BACKGROUND_COLOR = '#ffffff';
@@ -126,24 +126,23 @@ export const EnvironmentMixin = <T extends Constructor<ModelViewerElementBase>>(
         this[$cancelEnvironmentUpdate] = null;
       }
 
-      // Update background color before to get texture utils because renderer depends on background transparency
-      if (skyboxImage == null)
-      {
+      // Update background color before to get texture utils because renderer
+      // depends on background transparency
+      if (skyboxImage == null) {
         if (backgroundColor === 'transparent') {
           if (this[$scene].background != null) {
-            this.disconnectedCallback();
+            this[$disconnectRenderer]();
             this[$scene].background = null;
-            this.connectedCallback();  
+            this[$connectRenderer]();
           }
-        }
-        else {
+        } else {
           const mustUpdateRenderer = this[$scene].background == null;
-          mustUpdateRenderer && this.disconnectedCallback();
+          mustUpdateRenderer && this[$disconnectRenderer]();
 
           const parsedColor = new Color(backgroundColor);
           this[$scene].background = parsedColor;
 
-          mustUpdateRenderer && this.connectedCallback();
+          mustUpdateRenderer && this[$connectRenderer]();
         }
       }
 

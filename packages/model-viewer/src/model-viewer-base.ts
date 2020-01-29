@@ -60,6 +60,8 @@ export const $renderer = Symbol('renderer');
 export const $progressTracker = Symbol('progressTracker');
 export const $getLoaded = Symbol('getLoaded');
 export const $getModelIsVisible = Symbol('getModelIsVisible');
+export const $connectRenderer = Symbol('connectRenderer');
+export const $disconnectRenderer = Symbol('disconnectRenderer');
 
 interface ToBlobOptions {
   mimeType?: string, qualityArgument?: number, idealAspect?: boolean
@@ -128,7 +130,8 @@ export default class ModelViewerElementBase extends UpdatingElement {
   }
 
   get[$renderer]() {
-    return this[$scene].background != null ? Renderer.opaqueRenderer : Renderer.transparentRenderer;
+    return this[$scene].background != null ? Renderer.opaqueRenderer :
+                                             Renderer.transparentRenderer;
   }
 
   /** @export */
@@ -258,12 +261,7 @@ export default class ModelViewerElementBase extends UpdatingElement {
       this[$intersectionObserver]!.observe(this);
     }
 
-    this[$renderer].addEventListener(
-        'contextlost',
-        this[$contextLostHandler] as (event: ThreeEvent) => void);
-
-    this[$renderer].registerScene(this[$scene]);
-    this[$scene].isDirty = true;
+    this[$connectRenderer]();
 
     if (this[$clearModelTimeout] != null) {
       self.clearTimeout(this[$clearModelTimeout]!);
@@ -286,11 +284,7 @@ export default class ModelViewerElementBase extends UpdatingElement {
       this[$intersectionObserver]!.unobserve(this);
     }
 
-    this[$renderer].removeEventListener(
-        'contextlost',
-        this[$contextLostHandler] as (event: ThreeEvent) => void);
-
-    this[$renderer].unregisterScene(this[$scene]);
+    this[$disconnectRenderer]();
 
     this[$clearModelTimeout] = self.setTimeout(() => {
       this[$scene].model.clear();
@@ -370,6 +364,23 @@ export default class ModelViewerElementBase extends UpdatingElement {
   get[$ariaLabel]() {
     return (this.alt == null || this.alt === 'null') ? this[$defaultAriaLabel] :
                                                        this.alt;
+  }
+
+  [$connectRenderer]() {
+    this[$renderer].addEventListener(
+        'contextlost',
+        this[$contextLostHandler] as (event: ThreeEvent) => void);
+
+    this[$renderer].registerScene(this[$scene]);
+    this[$scene].isDirty = true;
+  }
+
+  [$disconnectRenderer]() {
+    this[$renderer].removeEventListener(
+        'contextlost',
+        this[$contextLostHandler] as (event: ThreeEvent) => void);
+
+    this[$renderer].unregisterScene(this[$scene]);
   }
 
   // NOTE(cdata): Although this may seem extremely redundant, it is required in

@@ -12,55 +12,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import {FrontSide, Material, Object3D, Scene, Vector3} from 'three';
-import {GLTF} from 'three/examples/jsm/loaders/GLTFLoader';
-import {SkeletonUtils} from 'three/examples/jsm/utils/SkeletonUtils.js';
-
-/**
- * Fully clones a parsed GLTF, including correct cloning of any SkinnedMesh
- * objects.
- *
- * NOTE(cdata): This is necessary due to limitations of the Three.js clone
- * routine on scenes. Without it, models with skeletal animations will not be
- * cloned properly.
- *
- * @see https://github.com/mrdoob/three.js/issues/5878
- */
-export const cloneGltf = (gltf: GLTF): GLTF => {
-  const clone:
-      GLTF = {...gltf, scene: SkeletonUtils.clone(gltf.scene!) as Scene};
-
-  /**
-   * Creates a clone of the given material, and applies a patch to the
-   * shader program.
-   */
-  const cloneAndPatchMaterial = (material: Material): Material => {
-    const clone = material.clone();
-    clone.shadowSide = FrontSide;
-    if (clone.transparent) {
-      clone.depthWrite = false;
-    }
-    return clone;
-  };
-
-  clone.scene!.traverse((node: any) => {
-    // Set a high renderOrder while we're here to ensure the model
-    // always renders on top of the skysphere
-    node.renderOrder = 1000;
-
-    // Materials aren't cloned when cloning meshes; geometry
-    // and materials are copied by reference. This is necessary
-    // for the same model to be used twice with different
-    // environment maps.
-    if (Array.isArray(node.material)) {
-      node.material = node.material.map(cloneAndPatchMaterial);
-    } else if (node.material != null) {
-      node.material = cloneAndPatchMaterial(node.material);
-    }
-  });
-
-  return clone;
-};
+import {Object3D, Vector3} from 'three';
 
 /**
  * Moves Three.js objects from one parent to another

@@ -14,12 +14,13 @@
  */
 
 import {property} from 'lit-element';
-import {Color, Texture} from 'three';
+import {Event as ThreeEvent, Texture} from 'three';
 
-import ModelViewerElementBase, {$container, $isInRenderTree, $needsRender, $onModelLoad, $progressTracker, $renderer, $scene} from '../model-viewer-base.js';
+import ModelViewerElementBase, {$needsRender, $onModelLoad, $progressTracker, $renderer, $scene, $shouldAttemptPreload} from '../model-viewer-base.js';
+import {PreloadEvent} from '../three-components/CachingGLTFLoader.js';
 import {Constructor, deserializeUrl} from '../utilities.js';
 
-const DEFAULT_BACKGROUND_COLOR = '#ffffff';
+export const BASE_OPACITY = 0.1;
 const DEFAULT_SHADOW_INTENSITY = 0.0;
 const DEFAULT_SHADOW_SOFTNESS = 1.0;
 const DEFAULT_EXPOSURE = 1.0;
@@ -28,11 +29,11 @@ const $currentEnvironmentMap = Symbol('currentEnvironmentMap');
 const $applyEnvironmentMap = Symbol('applyEnvironmentMap');
 const $updateEnvironment = Symbol('updateEnvironment');
 const $cancelEnvironmentUpdate = Symbol('cancelEnvironmentUpdate');
+const $onPreload = Symbol('onPreload');
 
 export declare interface EnvironmentInterface {
   environmentImage: string|null;
   skyboxImage: string|null;
-  backgroundColor: string;
   shadowIntensity: number;
   shadowSoftness: number;
   exposure: number;
@@ -41,22 +42,11 @@ export declare interface EnvironmentInterface {
 export const EnvironmentMixin = <T extends Constructor<ModelViewerElementBase>>(
     ModelViewerElement: T): Constructor<EnvironmentInterface>&T => {
   class EnvironmentModelViewerElement extends ModelViewerElement {
-    @property({
-      type: String,
-      attribute: 'environment-image',
-      converter: {fromAttribute: deserializeUrl}
-    })
+    @property({type: String, attribute: 'environment-image'})
     environmentImage: string|null = null;
 
-    @property({
-      type: String,
-      attribute: 'skybox-image',
-      converter: {fromAttribute: deserializeUrl}
-    })
+    @property({type: String, attribute: 'skybox-image'})
     skyboxImage: string|null = null;
-
-    @property({type: String, attribute: 'background-color'})
-    backgroundColor: string = DEFAULT_BACKGROUND_COLOR;
 
     @property({type: Number, attribute: 'shadow-intensity'})
     shadowIntensity: number = DEFAULT_SHADOW_INTENSITY;
@@ -73,11 +63,27 @@ export const EnvironmentMixin = <T extends Constructor<ModelViewerElementBase>>(
 
     private[$cancelEnvironmentUpdate]: ((...args: any[]) => any)|null = null;
 
+    private[$onPreload] = (event: ThreeEvent) => {
+      if ((event as PreloadEvent).element === this) {
+        this[$updateEnvironment]();
+      }
+    };
+
+    connectedCallback() {
+      super.connectedCallback();
+      this[$renderer].loader.addEventListener('preload', this[$onPreload]);
+    }
+
+    disconnectedCallback() {
+      super.disconnectedCallback();
+      this[$renderer].loader.removeEventListener('preload', this[$onPreload]);
+    }
+
     updated(changedProperties: Map<string|number|symbol, unknown>) {
       super.updated(changedProperties);
 
       if (changedProperties.has('shadowIntensity')) {
-        this[$scene].setShadowIntensity(this.shadowIntensity);
+        this[$scene].setShadowIntensity(this.shadowIntensity * BASE_OPACITY);
         this[$needsRender]();
       }
 
@@ -91,17 +97,15 @@ export const EnvironmentMixin = <T extends Constructor<ModelViewerElementBase>>(
         this[$needsRender]();
       }
 
-      if (changedProperties.has('environmentImage') ||
-          changedProperties.has('skyboxImage') ||
-          changedProperties.has('backgroundColor') ||
-          changedProperties.has('experimentalPmrem') ||
-          changedProperties.has($isInRenderTree)) {
+      if ((changedProperties.has('environmentImage') ||
+           changedProperties.has('skyboxImage')) &&
+          this[$shouldAttemptPreload]()) {
         this[$updateEnvironment]();
       }
     }
 
-    [$onModelLoad](event: any) {
-      super[$onModelLoad](event);
+    [$onModelLoad]() {
+      super[$onModelLoad]();
 
       if (this[$currentEnvironmentMap] != null) {
         this[$applyEnvironmentMap](this[$currentEnvironmentMap]);
@@ -109,17 +113,7 @@ export const EnvironmentMixin = <T extends Constructor<ModelViewerElementBase>>(
     }
 
     async[$updateEnvironment]() {
-      if (!this[$isInRenderTree]) {
-        return;
-      }
-
-      const {skyboxImage, backgroundColor, environmentImage} = this;
-      // Set the container node's background color so that it matches
-      // the background color configured for the scene. It's important
-      // to do this because we round the size of the canvas off to the
-      // nearest pixel, so it is possible (indeed likely) that there is
-      // a marginal gap around one or two edges of the canvas.
-      this[$container].style.backgroundColor = backgroundColor;
+      const {skyboxImage, environmentImage} = this;
 
       if (this[$cancelEnvironmentUpdate] != null) {
         this[$cancelEnvironmentUpdate]!();
@@ -136,8 +130,8 @@ export const EnvironmentMixin = <T extends Constructor<ModelViewerElementBase>>(
         const {environmentMap, skybox} =
             await new Promise(async (resolve, reject) => {
               const texturesLoad = textureUtils.generateEnvironmentMapAndSkybox(
-                  skyboxImage,
-                  environmentImage,
+                  deserializeUrl(skyboxImage),
+                  deserializeUrl(environmentImage),
                   {progressTracker: this[$progressTracker]});
               this[$cancelEnvironmentUpdate] = () => reject(texturesLoad);
               resolve(await texturesLoad);
@@ -146,8 +140,7 @@ export const EnvironmentMixin = <T extends Constructor<ModelViewerElementBase>>(
         if (skybox != null) {
           this[$scene].background = skybox.texture;
         } else {
-          const parsedColor = new Color(backgroundColor);
-          this[$scene].background = parsedColor;
+          this[$scene].background = null;
         }
 
         this[$applyEnvironmentMap](environmentMap.texture);
@@ -156,16 +149,6 @@ export const EnvironmentMixin = <T extends Constructor<ModelViewerElementBase>>(
         if (errorOrPromise instanceof Error) {
           this[$applyEnvironmentMap](null);
           throw errorOrPromise;
-        }
-
-        const {environmentMap, skybox} = await errorOrPromise;
-
-        if (environmentMap != null) {
-          environmentMap.dispose();
-        }
-
-        if (skybox != null) {
-          skybox.dispose();
         }
       }
     }

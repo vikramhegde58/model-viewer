@@ -83,7 +83,7 @@ export class ArtifactCreator {
       const analysisResults = await this.analyze(
           screenshot, goldens, scenario, dimensions, analysisThresholds);
 
-      const scenarioRecord = Object.assign({analysisResults}, scenario);
+      const scenarioRecord = {analysisResults, scenario};
 
       console.log(`\n💾 Recording analysis`);
 
@@ -156,6 +156,11 @@ export class ArtifactCreator {
             (mismatchingAverageDistanceRatio * 100).toFixed(2)}%`);
       }
 
+      const {rmsDistanceRatio} = thresholdResults[0];
+      console.log(
+          `\n  📊 Decibels of root mean square color distance (without threshold): ${
+              (10 * Math.log10(rmsDistanceRatio)).toFixed(2)}`);
+
       analysisResults.push(thresholdResults);
     }
 
@@ -219,11 +224,11 @@ export class ArtifactCreator {
     await page.evaluate(async () => {
       const modelBecomesReady = (self as any).modelLoaded ?
           Promise.resolve() :
-          new Promise((resolve, reject) => {
-            const timeout = setTimeout(reject, 60000);
+          new Promise((resolve) => {
+            // const timeout = setTimeout(reject, 60000);
 
             self.addEventListener('model-ready', () => {
-              clearTimeout(timeout);
+              // clearTimeout(timeout);
               resolve();
             }, {once: true});
           });

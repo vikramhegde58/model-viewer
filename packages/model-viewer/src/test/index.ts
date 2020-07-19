@@ -24,15 +24,18 @@ import './model-viewer-base-spec.js';
 import './three-components/ModelScene-spec.js';
 import './three-components/Renderer-spec.js';
 import './three-components/ARRenderer-spec.js';
+import './three-components/GLTFInstance-spec.js';
+import './three-components/gltf-instance/ModelViewerGLTFInstance-spec.js';
 import './three-components/SmoothControls-spec.js';
+import './three-components/Damper-spec.js';
 import './three-components/TextureUtils-spec.js';
 import './three-components/CachingGLTFLoader-spec.js';
 import './three-components/ModelUtils-spec.js';
+import './three-components/Hotspot-spec.js';
 import './utilities/animation-spec.js';
 import './utilities/cache-eviction-policy-spec.js';
 import './utilities/focus-visible-spec.js';
 import './utilities/progress-tracker-spec.js';
-import './utilities/timer-spec.js';
 import './features/animation-spec.js';
 import './features/annotation-spec.js';
 import './features/staging-spec.js';
@@ -40,5 +43,13 @@ import './features/controls-spec.js';
 import './features/environment-spec.js';
 import './features/loading-spec.js';
 import './features/loading/status-announcer-spec.js';
-import './features/magic-leap-spec.js';
+import './features/scene-graph-spec.js';
 import './features/ar-spec.js';
+
+try {
+  // Set an aggressive poll interval if we are using the IntersectionObserver
+  // polyfill. This is currently needed for IE11 and iOS Safari.
+  // @see https://github.com/w3c/IntersectionObserver/tree/master/polyfill#configuring-the-polyfill
+  (IntersectionObserver.prototype as any).POLL_INTERVAL = 50;
+} catch (e) {
+}

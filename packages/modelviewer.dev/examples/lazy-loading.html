@@ -36,14 +36,8 @@
   <!-- 💁 OPTIONAL: Resize Observer polyfill improves resize behavior in non-Chrome browsers -->
   <script src="../node_modules/resize-observer-polyfill/dist/ResizeObserver.js"></script>
 
-  <!-- 💁 OPTIONAL: Fullscreen polyfill is needed to fully support AR features -->
-  <script src="../node_modules/fullscreen-polyfill/dist/fullscreen.polyfill.js"></script>
-
   <!-- 💁 OPTIONAL: The :focus-visible polyfill removes the focus ring for some input types -->
   <script src="../node_modules/focus-visible/dist/focus-visible.js" defer></script>
-
-  <!-- 💁 OPTIONAL: Include prismatic.js for Magic Leap support -->
-  <!--<script src="../node_modules/@magicleap/prismatic/prismatic.min.js"></script>-->
   <style>
     #button-load {
       background-image: url(../assets/ic_get_app_white_24dp.svg);
@@ -64,16 +58,6 @@
       transform: translate3d(-50%, -50%, 0);
       z-index: 100;
     }
-    #lazy-load-poster {
-      position: absolute;
-      left: 0;
-      right: 0;
-      top: 0;
-      bottom: 0;
-      background-image: url(../assets/poster-damagedhelmet.png);
-      background-size: cover;
-      background-position: 50% 50%;
-    }
   </style>
 </head>
 
@@ -91,8 +75,14 @@
           <h4></h4>
         </div>
         <example-snippet stamp-to="demo-container-1" highlight-as="html">
+          
           <template>
-<model-viewer id="reveal" preload camera-controls auto-rotate poster="../assets/poster-shishkebab.png" src="../shared-assets/models/shishkebab.glb" alt="A 3D model of a shishkebab"></model-viewer>
+<style>
+  model-viewer#reveal {
+    --poster-color: transparent;
+  }
+</style>
+<model-viewer id="reveal" loading="eager" camera-controls auto-rotate poster="../assets/poster-shishkebab.png" src="../shared-assets/models/shishkebab.glb" alt="A 3D model of a shishkebab"></model-viewer>
           </template>
         </example-snippet>
       </div>
@@ -109,8 +99,13 @@
         </div>
         <example-snippet stamp-to="demo-container-2" highlight-as="html">
           <template>
+<style>
+  model-viewer#interaction {
+    --poster-color: transparent;
+  }
+</style>
 <!-- use unique asset to ensure preloading -->
-<model-viewer id="interaction" camera-controls preload reveal="interaction" poster="../assets/poster-sphere.png" src="../shared-assets/models/reflective-sphere.gltf" alt="A 3D model of a reflective sphere"></model-viewer>
+<model-viewer id="interaction" camera-controls loading="eager" reveal="interaction" poster="../assets/poster-sphere.png" src="../shared-assets/models/reflective-sphere.gltf" alt="A 3D model of a reflective sphere"></model-viewer>
           </template>
         </example-snippet>
       </div>
@@ -128,8 +123,21 @@
         </div>
         <example-snippet stamp-to="demo-container-3" highlight-as="html">
           <template>
+<style>
+  #lazy-load-poster {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    background-image: url(../assets/poster-damagedhelmet.png);
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+  }
+</style>
 <!-- use unique asset to ensure lazy loading -->
-<model-viewer id="lazy-load" camera-controls reveal="interaction" poster="../assets/poster-damagedhelmet.png" src="../shared-assets/models/glTF-Sample-Models/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf" alt="A 3D model of a damaged helmet">
+<model-viewer id="lazy-load" camera-controls reveal="interaction" src="../shared-assets/models/glTF-Sample-Models/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf" alt="A 3D model of a damaged helmet">
   <div id="lazy-load-poster" slot="poster"></div>
   <div id="button-load" slot="poster">Load 3D Model</div>
 </model-viewer>
@@ -200,7 +208,7 @@
       </li>
     </ul>
 
-    <div style="margin-top:24px;" class="copyright">©Copyright 2018 Google Inc. Licensed under the Apache License 2.0.</div>
+    <div style="margin-top:24px;" class="copyright">©Copyright 2018-2020 Google Inc. Licensed under the Apache License 2.0.</div>
     <div><a href="https://github.com/GoogleWebComponents/model-viewer">Github</a> ∙ <a href="https://model-viewer.glitch.me/">Glitch</a> ∙ <a href="https://github.com/GoogleWebComponents/model-viewer/issues">Bug report</a></div>
 
   </div>

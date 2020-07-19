@@ -36,14 +36,8 @@
   <!-- 💁 OPTIONAL: Resize Observer polyfill improves resize behavior in non-Chrome browsers -->
   <script src="../node_modules/resize-observer-polyfill/dist/ResizeObserver.js"></script>
 
-  <!-- 💁 OPTIONAL: Fullscreen polyfill is needed to fully support AR features -->
-  <script src="../node_modules/fullscreen-polyfill/dist/fullscreen.polyfill.js"></script>
-
   <!-- 💁 OPTIONAL: The :focus-visible polyfill removes the focus ring for some input types -->
   <script src="../node_modules/focus-visible/dist/focus-visible.js" defer></script>
-
-  <!-- 💁 OPTIONAL: Include prismatic.js for Magic Leap support -->
-  <!--<script src="../node_modules/@magicleap/prismatic/prismatic.min.js"></script>-->
   <style>
     body, html {
       height: 100%;
@@ -89,6 +83,31 @@
       margin-bottom: 20px;
     }
 
+    .hotspot{
+      width: 20px;
+      height: 20px;
+      border-radius: 10px;
+      border: none;
+      background-color: blue;
+    }
+
+    .annotation{
+      background-color: #888888;
+      position: absolute;
+      transform: translate(10px, 10px);
+      border-radius: 10px;
+      padding: 10px;
+      text-align: left;
+    }
+
+    .hotspot.selected{
+      background-color: red;
+    }
+
+    .hotspot:not(.selected) > .annotation{
+      display: none;
+    }
+
     @media screen and (max-width: 320px) {
       #instructions {
         display: none;
@@ -113,8 +132,8 @@
       <option value="../shared-assets/models/glTF-Sample-Models/2.0/BoomBox/glTF-Binary/BoomBox.glb">Boom Box</option>
       <option value="../shared-assets/models/glTF-Sample-Models/2.0/BrainStem/glTF-Binary/BrainStem.glb">Brain Stem</option>
       <option value="../shared-assets/models/glTF-Sample-Models/2.0/Corset/glTF-Binary/Corset.glb">Corset</option>
-      <option value="../shared-assets/models/glTF-Sample-Models/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb">Damaged Helmet</option>
-      <option value="../shared-assets/models/glTF-Sample-Models/2.0/FlightHelmet/glTF/FlightHelmet.gltf" selected>Flight Helmet</option>
+      <option value="../shared-assets/models/glTF-Sample-Models/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb" selected>Damaged Helmet</option>
+      <option value="../shared-assets/models/glTF-Sample-Models/2.0/FlightHelmet/glTF/FlightHelmet.gltf">Flight Helmet</option>
       <option value="../shared-assets/models/glTF-Sample-Models/2.0/Lantern/glTF-Binary/Lantern.glb">Lantern</option>
       <option value="../shared-assets/models/glTF-Sample-Models/2.0/Suzanne/glTF/Suzanne.gltf">Monkey</option>
       <option value="../shared-assets/models/glTF-Sample-Models/2.0/SpecGlossVsMetalRough/glTF-Binary/SpecGlossVsMetalRough.glb">Water Bottles</option>
@@ -136,9 +155,6 @@
 
     <label for="useSkybox">use as skybox:</label>
     <input id="useSkybox" type="checkbox" disabled="true"><br/>
-
-    <label for="backgroundColor">background-color:</label>
-    <input id="backgroundColor" value="#e1e1e1" class="string"><br/>
 
     <label for="exposure">exposure:</label>
     <input id="exposure" type="range" step="0.01" min="0" max="2" value="1">
@@ -163,11 +179,17 @@
     Click the model to dismiss the poster and interact. To save your poster, click:<br/>
     <button id="download" onclick="downloadPoster()">Download Poster</button><br/>
     camera-orbit:
-    <div id="cameraOrbit"></div>
+		<div id="cameraOrbit"></div><br/><br/>
+		
+		To calculate hotspot locations, click:<br/>
+		<button onclick="addHotspot()">Add Hotspot</button><br/>
+		Then click on the model.<br/>
+		To remove a hotspot, select it, then click:<br/>
+		<button onclick="removeHotspot()">Remove Hotspot</button><br/>
     
     </div> 
     <model-viewer id="loading-demo" autoplay camera-controls interaction-prompt="none"
-      src="../shared-assets/models/glTF-Sample-Models/2.0/FlightHelmet/glTF/FlightHelmet.gltf" background-color="#e1e1e1" alt="A 3D model">
+      src="../shared-assets/models/glTF-Sample-Models/2.0/DamagedHelmet/glTF-Binary/DamagedHelmet.glb" alt="A 3D model">
     </model-viewer>
   </div>
 
@@ -198,7 +220,7 @@
         licensed under <a href="https://hdrihaven.com/p/license.php">CC0</a>.
       </li>
     </ul>
-    <div style="margin-top:24px;" class="copyright">©Copyright 2018 Google Inc. Licensed under the Apache License 2.0.</div>
+    <div style="margin-top:24px;" class="copyright">©Copyright 2018-2020 Google Inc. Licensed under the Apache License 2.0.</div>
     <div><a href="https://github.com/GoogleWebComponents/model-viewer">Github</a> ∙ <a href="https://model-viewer.glitch.me/">Glitch</a> ∙ <a href="https://github.com/GoogleWebComponents/model-viewer/issues">Bug report</a></div>
   </div>
 

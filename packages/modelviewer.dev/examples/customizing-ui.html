@@ -36,9 +36,6 @@
   <!-- 💁 OPTIONAL: Resize Observer polyfill improves resize behavior in non-Chrome browsers -->
   <script src="../node_modules/resize-observer-polyfill/dist/ResizeObserver.js"></script>
 
-  <!-- 💁 OPTIONAL: Fullscreen polyfill is needed to fully support AR features -->
-  <script src="../node_modules/fullscreen-polyfill/dist/fullscreen.polyfill.js"></script>
-
   <!-- 💁 OPTIONAL: The :focus-visible polyfill removes the focus ring for some input types -->
   <script src="../node_modules/focus-visible/dist/focus-visible.js" defer></script>
 </head>
@@ -56,7 +53,7 @@
         </div>
         <example-snippet stamp-to="demo-container-1" highlight-as="html">
           <template>
-  <model-viewer ar camera-controls ios-src="assets/Astronaut.usdz" src="../shared-assets/models/Astronaut.glb" background-color="#222" alt="A 3D model of an astronaut">
+  <model-viewer ar camera-controls ios-src="assets/Astronaut.usdz" src="../shared-assets/models/Astronaut.glb" alt="A 3D model of an astronaut">
       <button slot="ar-button" style="background-color: white; border-radius: 4px; border: none; position: absolute; top: 16px; right: 16px; ">
           👋 Activate AR
       </button>
@@ -74,6 +71,27 @@
     </div>
   </div>
 
+  <div class="sample">
+    <div id="demo-container-2" class="demo"></div>
+    <div class="content">
+      <div class="wrapper">
+        <div class="heading">
+          <h2 class="demo-title">Transparent Background</h2>
+          <h4></h4>
+        </div>
+        <example-snippet stamp-to="demo-container-2" highlight-as="html">
+          <template>
+<div  class="demo" style="background: linear-gradient(#ffffff, #ada996);">
+  <span style="position: absolute; text-align: center; font-size: 140px;">Background</span>
+  <model-viewer camera-controls src="../shared-assets/models/glTF-Sample-Models/2.0/AlphaBlendModeTest/glTF-Binary/AlphaBlendModeTest.glb" alt="A 3D transparency test" style="background-color: unset;"></model-viewer>
+</div>
+          </template>
+        </example-snippet>
+
+      </div>
+    </div>
+  </div>
+
   <div class="footer">
     <ul>
       <li class="attribution">
@@ -81,7 +99,7 @@
         licensed under <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0</a>.
       </li>
     </ul>
-    <div style="margin-top:24px;" class="copyright">©Copyright 2018 Google Inc. Licensed under the Apache License 2.0.</div>
+    <div style="margin-top:24px;" class="copyright">©Copyright 2018-2020 Google Inc. Licensed under the Apache License 2.0.</div>
     <div><a href="https://github.com/GoogleWebComponents/model-viewer">Github</a> ∙ <a href="https://model-viewer.glitch.me/">Glitch</a> ∙ <a href="https://github.com/GoogleWebComponents/model-viewer/issues">Bug report</a></div>
   </div>
 

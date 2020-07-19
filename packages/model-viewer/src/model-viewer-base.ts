@@ -15,51 +15,75 @@
 
 import {property} from 'lit-element';
 import {UpdatingElement} from 'lit-element/lib/updating-element';
-import {Event as ThreeEvent} from 'three';
+import {Event as ThreeEvent, Vector3} from 'three';
 
 import {HAS_INTERSECTION_OBSERVER, HAS_RESIZE_OBSERVER} from './constants.js';
 import {makeTemplate} from './template.js';
 import {$evictionPolicy, CachingGLTFLoader} from './three-components/CachingGLTFLoader.js';
 import {ModelScene} from './three-components/ModelScene.js';
 import {ContextLostEvent, Renderer} from './three-components/Renderer.js';
-import {debounce, deserializeUrl, resolveDpr} from './utilities.js';
+import {debounce} from './utilities.js';
 import {dataUrlToBlob} from './utilities/data-conversion.js';
 import {ProgressTracker} from './utilities/progress-tracker.js';
 
 const CLEAR_MODEL_TIMEOUT_MS = 1000;
 const FALLBACK_SIZE_UPDATE_THRESHOLD_MS = 50;
+const ANNOUNCE_MODEL_VISIBILITY_DEBOUNCE_THRESHOLD = 0;
 const UNSIZED_MEDIA_WIDTH = 300;
 const UNSIZED_MEDIA_HEIGHT = 150;
 
-const $updateSize = Symbol('updateSize');
-const $loaded = Symbol('loaded');
+const blobCanvas = document.createElement('canvas');
+let blobContext: CanvasRenderingContext2D|null = null;
+
 const $template = Symbol('template');
 const $fallbackResizeHandler = Symbol('fallbackResizeHandler');
 const $defaultAriaLabel = Symbol('defaultAriaLabel');
 const $resizeObserver = Symbol('resizeObserver');
 const $intersectionObserver = Symbol('intersectionObserver');
-const $lastDpr = Symbol('lastDpr');
 const $clearModelTimeout = Symbol('clearModelTimeout');
 const $onContextLost = Symbol('onContextLost');
 const $contextLostHandler = Symbol('contextLostHandler');
 
-export const $isInRenderTree = Symbol('isInRenderTree');
+export const $loaded = Symbol('loaded');
+export const $updateSize = Symbol('updateSize');
+export const $isElementInViewport = Symbol('isElementInViewport');
+export const $announceModelVisibility = Symbol('announceModelVisibility');
 export const $ariaLabel = Symbol('ariaLabel');
 export const $loadedTime = Symbol('loadedTime');
 export const $updateSource = Symbol('updateSource');
 export const $markLoaded = Symbol('markLoaded');
 export const $container = Symbol('container');
+export const $userInputElement = Symbol('input');
 export const $canvas = Symbol('canvas');
 export const $scene = Symbol('scene');
 export const $needsRender = Symbol('needsRender');
 export const $tick = Symbol('tick');
 export const $onModelLoad = Symbol('onModelLoad');
 export const $onResize = Symbol('onResize');
-export const $onUserModelOrbit = Symbol('onUserModelOrbit');
 export const $renderer = Symbol('renderer');
 export const $progressTracker = Symbol('progressTracker');
 export const $getLoaded = Symbol('getLoaded');
 export const $getModelIsVisible = Symbol('getModelIsVisible');
+export const $shouldAttemptPreload = Symbol('shouldAttemptPreload');
+export const $sceneIsReady = Symbol('sceneIsReady');
+
+export interface Vector3D {
+  x: number
+  y: number
+  z: number
+  toString(): string
+}
+
+export const toVector3D = (v: Vector3) => {
+  return {
+    x: v.x,
+    y: v.y,
+    z: v.z,
+    toString() {
+      return `${this.x}m ${this.y}m ${this.z}m`;
+    }
+  };
+};
 
 interface ToBlobOptions {
   mimeType?: string, qualityArgument?: number, idealAspect?: boolean
@@ -94,25 +118,50 @@ export default class ModelViewerElementBase extends UpdatingElement {
     return CachingGLTFLoader[$evictionPolicy].evictionThreshold
   }
 
+  /** @export */
+  static set minimumRenderScale(value: number) {
+    if (value > 1) {
+      console.warn(
+          '<model-viewer> minimumRenderScale has been clamped to a maximum value of 1.');
+    }
+    if (value <= 0) {
+      console.warn(
+          '<model-viewer> minimumRenderScale has been clamped to a minimum value of 0. This could result in single-pixel renders on some devices; consider increasing.');
+    }
+    Renderer.singleton.minScale = Math.max(0, Math.min(1, value));
+  }
+
+  /** @export */
+  static get minimumRenderScale(): number {
+    return Renderer.singleton.minScale;
+  }
+
   @property({type: String}) alt: string|null = null;
 
-  @property({converter: {fromAttribute: deserializeUrl}})
-  src: string|null = null;
+  @property({type: String}) src: string|null = null;
 
-  protected[$isInRenderTree] = false;
+  protected[$isElementInViewport] = false;
   protected[$loaded] = false;
   protected[$loadedTime] = 0;
   protected[$scene]: ModelScene;
   protected[$container]: HTMLDivElement;
+  protected[$userInputElement]: HTMLDivElement;
   protected[$canvas]: HTMLCanvasElement;
   protected[$defaultAriaLabel]: string;
-  protected[$lastDpr]: number = resolveDpr();
   protected[$clearModelTimeout]: number|null = null;
 
   protected[$fallbackResizeHandler] = debounce(() => {
     const boundingRect = this.getBoundingClientRect();
     this[$updateSize](boundingRect);
   }, FALLBACK_SIZE_UPDATE_THRESHOLD_MS);
+
+  protected[$announceModelVisibility] = debounce((oldVisibility: boolean) => {
+    const newVisibility = this.modelIsVisible;
+    if (newVisibility !== oldVisibility) {
+      this.dispatchEvent(new CustomEvent(
+          'model-visibility', {detail: {visible: newVisibility}}));
+    }
+  }, ANNOUNCE_MODEL_VISIBILITY_DEBOUNCE_THRESHOLD);
 
   protected[$resizeObserver]: ResizeObserver|null = null;
   protected[$intersectionObserver]: IntersectionObserver|null = null;
@@ -153,15 +202,18 @@ export default class ModelViewerElementBase extends UpdatingElement {
 
     // NOTE(cdata): The canonical ShadyCSS examples suggest that the Shadow Root
     // should be created after the invocation of ShadyCSS.styleElement
-    this.attachShadow({mode: 'open', delegatesFocus: true});
+    this.attachShadow({mode: 'open'});
 
     const shadowRoot = this.shadowRoot!;
 
     shadowRoot.appendChild(template.content.cloneNode(true));
 
     this[$container] = shadowRoot.querySelector('.container') as HTMLDivElement;
+    this[$userInputElement] =
+        shadowRoot.querySelector('.userInput') as HTMLDivElement;
     this[$canvas] = shadowRoot.querySelector('canvas') as HTMLCanvasElement;
-    this[$defaultAriaLabel] = this[$canvas].getAttribute('aria-label')!;
+    this[$defaultAriaLabel] =
+        this[$userInputElement].getAttribute('aria-label')!;
 
     // Because of potential race conditions related to invoking the constructor
     // we only use the bounding rect to set the initial size if the element is
@@ -182,7 +234,7 @@ export default class ModelViewerElementBase extends UpdatingElement {
 
     this[$scene].addEventListener('model-load', (event) => {
       this[$markLoaded]();
-      this[$onModelLoad](event);
+      this[$onModelLoad]();
 
       this.dispatchEvent(
           new CustomEvent('load', {detail: {url: (event as any).url}}));
@@ -191,7 +243,7 @@ export default class ModelViewerElementBase extends UpdatingElement {
     // Update initial size on microtask timing so that subclasses have a
     // chance to initialize
     Promise.resolve().then(() => {
-      this[$updateSize](this.getBoundingClientRect(), true);
+      this[$updateSize](this.getBoundingClientRect());
     });
 
     if (HAS_RESIZE_OBSERVER) {
@@ -214,35 +266,31 @@ export default class ModelViewerElementBase extends UpdatingElement {
     }
 
     if (HAS_INTERSECTION_OBSERVER) {
-      const enterRenderTreeProgress = this[$progressTracker].beginActivity();
-
       this[$intersectionObserver] = new IntersectionObserver(entries => {
         for (let entry of entries) {
           if (entry.target === this) {
-            const oldValue = this[$isInRenderTree];
-            this[$isInRenderTree] = this[$scene].visible = entry.isIntersecting;
-            this.requestUpdate($isInRenderTree, oldValue);
-
-            if (this[$isInRenderTree]) {
-              // Wait a microtask to give other properties a chance to respond
-              // to the state change, then resolve progress on entering the
-              // render tree:
-              Promise.resolve().then(() => {
-                enterRenderTreeProgress(1);
-              });
+            const oldVisibility = this.modelIsVisible;
+            this[$isElementInViewport] = entry.isIntersecting;
+            this[$announceModelVisibility](oldVisibility);
+            if (this[$isElementInViewport] && !this[$sceneIsReady]()) {
+              this[$updateSource]();
             }
           }
         }
       }, {
         root: null,
-        rootMargin: '10px',
+        // We used to have margin here, but it was causing animated models below
+        // the fold to steal the frame budget. Weirder still, it would also
+        // cause input events to be swallowed, sometimes for seconds on the
+        // model above the fold, but only when the animated model was completely
+        // below. Setting this margin to zero fixed it.
+        rootMargin: '0px',
         threshold: 0,
       });
     } else {
       // If there is no intersection obsever, then all models should be visible
       // at all times:
-      this[$isInRenderTree] = this[$scene].visible = true;
-      this.requestUpdate($isInRenderTree, false);
+      this[$isElementInViewport] = true;
     }
   }
 
@@ -258,12 +306,12 @@ export default class ModelViewerElementBase extends UpdatingElement {
       this[$intersectionObserver]!.observe(this);
     }
 
-    this[$renderer].addEventListener(
+    const renderer = this[$renderer];
+    renderer.addEventListener(
         'contextlost',
         this[$contextLostHandler] as (event: ThreeEvent) => void);
 
-    this[$renderer].registerScene(this[$scene]);
-    this[$scene].isDirty = true;
+    renderer.registerScene(this[$scene]);
 
     if (this[$clearModelTimeout] != null) {
       self.clearTimeout(this[$clearModelTimeout]!);
@@ -286,11 +334,12 @@ export default class ModelViewerElementBase extends UpdatingElement {
       this[$intersectionObserver]!.unobserve(this);
     }
 
-    this[$renderer].removeEventListener(
+    const renderer = this[$renderer];
+    renderer.removeEventListener(
         'contextlost',
         this[$contextLostHandler] as (event: ThreeEvent) => void);
 
-    this[$renderer].unregisterScene(this[$scene]);
+    renderer.unregisterScene(this[$scene]);
 
     this[$clearModelTimeout] = self.setTimeout(() => {
       this[$scene].model.clear();
@@ -313,13 +362,15 @@ export default class ModelViewerElementBase extends UpdatingElement {
 
     if (changedProperties.has('alt')) {
       const ariaLabel = this.alt == null ? this[$defaultAriaLabel] : this.alt;
-      this[$canvas].setAttribute('aria-label', ariaLabel);
+      this[$userInputElement].setAttribute('aria-label', ariaLabel);
     }
   }
 
   /** @export */
   toDataURL(type?: string, encoderOptions?: number): string {
-    return this[$canvas].toDataURL(type, encoderOptions);
+    return this[$renderer]
+        .displayCanvas(this[$scene])
+        .toDataURL(type, encoderOptions);
   }
 
   /** @export */
@@ -327,34 +378,56 @@ export default class ModelViewerElementBase extends UpdatingElement {
     const mimeType = options ? options.mimeType : undefined;
     const qualityArgument = options ? options.qualityArgument : undefined;
     const idealAspect = options ? options.idealAspect : undefined;
+
     const {width, height, model, aspect} = this[$scene];
+    const {dpr, scaleFactor} = this[$renderer];
+    let outputWidth = width * scaleFactor * dpr;
+    let outputHeight = height * scaleFactor * dpr;
+    let offsetX = 0;
+    let offsetY = 0;
     if (idealAspect === true) {
-      const idealWidth = model.fieldOfViewAspect > aspect ?
-          width :
-          Math.round(height * model.fieldOfViewAspect);
-      const idealHeight = model.fieldOfViewAspect > aspect ?
-          Math.round(width / model.fieldOfViewAspect) :
-          height;
-      this[$updateSize]({width: idealWidth, height: idealHeight});
-      await new Promise(resolve => requestAnimationFrame(resolve));
+      if (model.fieldOfViewAspect > aspect) {
+        const oldHeight = outputHeight;
+        outputHeight = Math.round(outputWidth / model.fieldOfViewAspect);
+        offsetY = (oldHeight - outputHeight) / 2;
+      } else {
+        const oldWidth = outputWidth;
+        outputWidth = Math.round(outputHeight * model.fieldOfViewAspect);
+        offsetX = (oldWidth - outputWidth) / 2;
+      }
     }
+    blobCanvas.width = outputWidth;
+    blobCanvas.height = outputHeight;
     try {
       return new Promise<Blob>(async (resolve, reject) => {
-        if ((this[$canvas] as any).msToBlob) {
+        if (blobContext == null) {
+          blobContext = blobCanvas.getContext('2d');
+        }
+        blobContext!.drawImage(
+            this[$renderer].displayCanvas(this[$scene]),
+            offsetX,
+            offsetY,
+            outputWidth,
+            outputHeight,
+            0,
+            0,
+            outputWidth,
+            outputHeight);
+        if ((blobCanvas as any).msToBlob) {
           // NOTE: msToBlob only returns image/png
           // so ensure mimeType is not specified (defaults to image/png)
           // or is image/png, otherwise fallback to using toDataURL on IE.
           if (!mimeType || mimeType === 'image/png') {
-            return resolve((this[$canvas] as any).msToBlob());
+            return resolve((blobCanvas as any).msToBlob());
           }
         }
 
-        if (!this[$canvas].toBlob) {
+        if (!blobCanvas.toBlob) {
           return resolve(await dataUrlToBlob(
-              this[$canvas].toDataURL(mimeType, qualityArgument)));
+              blobCanvas.toDataURL(mimeType, qualityArgument)));
         }
 
-        this[$canvas].toBlob((blob) => {
+        blobCanvas.toBlob((blob) => {
           if (!blob) {
             return reject(new Error('Unable to retrieve canvas blob'));
           }
@@ -382,39 +455,28 @@ export default class ModelViewerElementBase extends UpdatingElement {
 
   // @see [$getLoaded]
   [$getModelIsVisible](): boolean {
-    return true;
+    return this.loaded && this[$isElementInViewport];
+  }
+
+  [$shouldAttemptPreload](): boolean {
+    return !!this.src && this[$isElementInViewport];
+  }
+
+  [$sceneIsReady](): boolean {
+    return this[$loaded];
   }
 
   /**
    * Called on initialization and when the resize observer fires.
    */
-  [$updateSize](
-      {width, height}: {width: any, height: any}, forceApply = false) {
-    const {width: prevWidth, height: prevHeight} = this[$scene].getSize();
-    // Round off the pixel size
-    const intWidth = parseInt(width, 10);
-    const intHeight = parseInt(height, 10);
-
+  [$updateSize]({width, height}: {width: any, height: any}) {
     this[$container].style.width = `${width}px`;
     this[$container].style.height = `${height}px`;
 
-    if (forceApply || (prevWidth !== intWidth || prevHeight !== intHeight)) {
-      this[$onResize]({width: intWidth, height: intHeight});
-    }
+    this[$onResize]({width: parseFloat(width), height: parseFloat(height)});
   }
 
   [$tick](_time: number, _delta: number) {
-    const dpr = resolveDpr();
-    // There is no standard way to detect when DPR changes on account of zoom.
-    // Here we keep a local copy of DPR updated, and when it changes we invoke
-    // the fallback resize handler. It might be better to invoke the resize
-    // handler directly in this case, but the fallback is debounced which will
-    // save us from doing too much work when DPR and window size changes at the
-    // same time.
-    if (dpr !== this[$lastDpr]) {
-      this[$lastDpr] = dpr;
-      this[$fallbackResizeHandler]();
-    }
   }
 
   [$markLoaded]() {
@@ -424,21 +486,17 @@ export default class ModelViewerElementBase extends UpdatingElement {
 
     this[$loaded] = true;
     this[$loadedTime] = performance.now();
-    // Asynchronously invoke `update`:
-    this.requestUpdate();
   }
 
   [$needsRender]() {
     this[$scene].isDirty = true;
   }
 
-  [$onModelLoad](_event: any) {
-    this[$needsRender]();
+  [$onModelLoad]() {
   }
 
   [$onResize](e: {width: number, height: number}) {
     this[$scene].setSize(e.width, e.height);
-    this[$needsRender]();
   }
 
   [$onContextLost](event: ContextLostEvent) {
@@ -453,18 +511,24 @@ export default class ModelViewerElementBase extends UpdatingElement {
    * attribute.
    */
   async[$updateSource]() {
+    if (this.loaded || !this[$shouldAttemptPreload]()) {
+      return;
+    }
     const updateSourceProgress = this[$progressTracker].beginActivity();
     const source = this.src;
-
     try {
-      this[$canvas].classList.add('show');
       await this[$scene].setModelSource(
-          source, (progress: number) => updateSourceProgress(progress * 0.9));
+          source, (progress: number) => updateSourceProgress(progress * 0.8));
+
+      const detail = {url: source};
+      this.dispatchEvent(new CustomEvent('preload', {detail}));
     } catch (error) {
-      this[$canvas].classList.remove('show');
       this.dispatchEvent(new CustomEvent('error', {detail: error}));
     } finally {
-      updateSourceProgress(1.0);
+      updateSourceProgress(0.9);
+      requestAnimationFrame(() => {
+        updateSourceProgress(1.0);
+      });
     }
   }
 }

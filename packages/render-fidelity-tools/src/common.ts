@@ -28,11 +28,17 @@ export interface ImageComparisonAnalysis {
   matchingRatio: number;
   averageDistanceRatio: number;
   mismatchingAverageDistanceRatio: number;
+  rmsDistanceRatio: number;
 }
 
 export interface ImageComparisonResults {
   analysis: ImageComparisonAnalysis;
   imageBuffers: {delta: ArrayBuffer|null; blackWhite: ArrayBuffer | null;};
+}
+
+export interface ScenarioRecord {
+  analysisResults: Array<Array<ImageComparisonAnalysis>>;
+  scenarioConfig: ScenarioConfig;
 }
 
 export interface ImageComparisonMessage {
@@ -86,6 +92,7 @@ export interface ScenarioConfig {
   orbit: {theta: number, phi: number, radius: number};
   verticalFoV: number;
   exclude?: Array<string>;
+  pt?: {numSamples?: number};
 }
 
 export interface RendererConfig {
@@ -150,6 +157,7 @@ export class ImageComparator {
 
     let matched = 0;
     let sum = 0;
+    let squareSum = 0;
     let mismatchingSum = 0;
     let maximumDeltaIntensity = 0;
 
@@ -175,6 +183,7 @@ export class ImageComparator {
         const thresholdDelta = Math.max(0, delta - thresholdSquared);
 
         sum += thresholdDelta;
+        squareSum += delta * delta;
 
         if (generateVisuals) {
           const deltaIntensity =
@@ -221,15 +230,18 @@ export class ImageComparator {
     const mismatchingPixels = this.imagePixels - matched;
 
     const mismatchingAverageDistanceRatio = mismatchingPixels > 0 ?
-        mismatchingSum / (this.imagePixels - matched) / MAX_COLOR_DISTANCE :
+        mismatchingSum / mismatchingPixels / MAX_COLOR_DISTANCE :
         0;
     const averageDistanceRatio = sum / this.imagePixels / MAX_COLOR_DISTANCE;
+    const rmsDistanceRatio =
+        Math.sqrt(squareSum / this.imagePixels) / MAX_COLOR_DISTANCE;
 
     return {
       analysis: {
         matchingRatio: matched / this.imagePixels,
         averageDistanceRatio,
         mismatchingAverageDistanceRatio,
+        rmsDistanceRatio
       },
       imageBuffers: {
         delta: deltaImage ? deltaImage.buffer as ArrayBuffer : null,

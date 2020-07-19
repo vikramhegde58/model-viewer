@@ -13,31 +13,41 @@
  * limitations under the License.
  */
 
-import {AnimationAction, AnimationClip, AnimationMixer, Box3, Object3D, Scene, Vector3} from 'three';
+import {AnimationAction, AnimationClip, AnimationMixer, Box3, Object3D, Vector3} from 'three';
 
-import {$releaseFromCache, CacheRetainedScene, CachingGLTFLoader} from './CachingGLTFLoader.js';
-import {moveChildren, reduceVertices} from './ModelUtils.js';
+import ModelViewerElementBase, {$renderer} from '../model-viewer-base.js';
 
-const $cancelPendingSourceChange = Symbol('cancelPendingSourceChange');
-const $currentScene = Symbol('currentScene');
+import {ModelViewerGLTFInstance} from './gltf-instance/ModelViewerGLTFInstance.js';
+import {Hotspot} from './Hotspot.js';
+import {reduceVertices} from './ModelUtils.js';
+import {Shadow} from './Shadow.js';
 
 export const DEFAULT_FOV_DEG = 45;
+const DEFAULT_HALF_FOV = (DEFAULT_FOV_DEG / 2) * Math.PI / 180;
+export const SAFE_RADIUS_RATIO = Math.sin(DEFAULT_HALF_FOV);
+export const DEFAULT_TAN_FOV = Math.tan(DEFAULT_HALF_FOV);
 
-const $loader = Symbol('loader');
+export const $shadow = Symbol('shadow');
+const $cancelPendingSourceChange = Symbol('cancelPendingSourceChange');
+const $currentGLTF = Symbol('currentGLTF');
+
+const view = new Vector3();
+const target = new Vector3();
+const normalWorld = new Vector3();
 
 /**
- * An Object3D that can swap out its underlying
- * model.
+ * An Object3D that can swap out its underlying model.
  */
 export default class Model extends Object3D {
-  private[$currentScene]: CacheRetainedScene|null = null;
-  private[$loader] = new CachingGLTFLoader();
+  protected[$shadow]: Shadow|null = null;
+
+  private[$currentGLTF]: ModelViewerGLTFInstance|null = null;
   private mixer: AnimationMixer;
   private[$cancelPendingSourceChange]: (() => void)|null;
-  private animations: Array<AnimationClip> = [];
   private animationsByName: Map<string, AnimationClip> = new Map();
   private currentAnimationAction: AnimationAction|null = null;
 
+  public animations: Array<AnimationClip> = [];
   public modelContainer = new Object3D();
   public animationNames: Array<string> = [];
   public boundingBox = new Box3();
@@ -47,8 +57,8 @@ export default class Model extends Object3D {
   public userData: {url: string|null} = {url: null};
   public url: string|null = null;
 
-  get loader() {
-    return this[$loader];
+  get currentGLTF() {
+    return this[$currentGLTF];
   }
 
   /**
@@ -84,7 +94,8 @@ export default class Model extends Object3D {
   }
 
   async setSource(
-      url: string|null, progressCallback?: (progress: number) => void) {
+      element: ModelViewerElementBase, url: string|null,
+      progressCallback?: (progress: number) => void) {
     if (!url || url === this.url) {
       if (progressCallback) {
         progressCallback(1);
@@ -101,20 +112,23 @@ export default class Model extends Object3D {
 
     this.url = url;
 
-    let scene: Scene|null = null;
+    let gltf: ModelViewerGLTFInstance;
 
     try {
-      scene = await new Promise<Scene|null>(async (resolve, reject) => {
-        this[$cancelPendingSourceChange] = () => reject();
-        try {
-          const result = await this.loader.load(url, progressCallback);
-          resolve(result);
-        } catch (error) {
-          reject(error);
-        }
-      });
+      gltf = await new Promise<ModelViewerGLTFInstance>(
+          async (resolve, reject) => {
+            this[$cancelPendingSourceChange] = () => reject();
+            try {
+              const result = await element[$renderer].loader.load(
+                  url, element, progressCallback);
+              resolve(result);
+            } catch (error) {
+              reject(error);
+            }
+          });
     } catch (error) {
       if (error == null) {
+        // Loading was cancelled, so silently return
         return;
       }
 
@@ -122,20 +136,13 @@ export default class Model extends Object3D {
     }
 
     this.clear();
-    this[$currentScene] = scene as CacheRetainedScene;
+    this[$currentGLTF] = gltf;
 
-    if (scene != null) {
-      moveChildren(scene, this.modelContainer);
+    if (gltf != null) {
+      this.modelContainer.add(gltf.scene);
     }
 
-    this.modelContainer.traverse(obj => {
-      if (obj && obj.type === 'Mesh') {
-        obj.castShadow = true;
-      }
-    });
-
-
-    const animations = scene ? scene.userData.animations : [];
+    const {animations} = gltf!;
     const animationsByName = new Map();
     const animationNames = [];
 
@@ -156,9 +163,7 @@ export default class Model extends Object3D {
   }
 
   set animationTime(value: number) {
-    if (this.currentAnimationAction != null) {
-      this.currentAnimationAction.time = value;
-    }
+    this.mixer.setTime(value);
   }
 
   get animationTime(): number {
@@ -231,11 +236,14 @@ export default class Model extends Object3D {
   clear() {
     this.url = null;
     this.userData = {url: null};
+    const gltf = this[$currentGLTF];
     // Remove all current children
-    if (this[$currentScene] != null) {
-      moveChildren(this.modelContainer, this[$currentScene]!);
-      this[$currentScene]![$releaseFromCache]();
-      this[$currentScene] = null;
+    if (gltf != null) {
+      for (const child of this.modelContainer.children) {
+        this.modelContainer.remove(child);
+      }
+      gltf.dispose();
+      this[$currentGLTF] = null;
     }
 
     if (this.currentAnimationAction != null) {
@@ -270,9 +278,7 @@ export default class Model extends Object3D {
     const framedRadius =
         Math.sqrt(reduceVertices(this.modelContainer, radiusSquared));
 
-    const halfFov = (DEFAULT_FOV_DEG / 2) * Math.PI / 180;
-    this.idealCameraDistance = framedRadius / Math.sin(halfFov);
-    const verticalFov = Math.tan(halfFov);
+    this.idealCameraDistance = framedRadius / SAFE_RADIUS_RATIO;
 
     const horizontalFov = (value: number, vertex: Vector3): number => {
       vertex.sub(center!);
@@ -281,8 +287,136 @@ export default class Model extends Object3D {
           value, radiusXZ / (this.idealCameraDistance - Math.abs(vertex.y)));
     };
     this.fieldOfViewAspect =
-        reduceVertices(this.modelContainer, horizontalFov) / verticalFov;
+        reduceVertices(this.modelContainer, horizontalFov) / DEFAULT_TAN_FOV;
 
     this.add(this.modelContainer);
+  }
+
+  /**
+   * Sets the shadow's intensity, lazily creating the shadow as necessary.
+   */
+  setShadowIntensity(shadowIntensity: number, shadowSoftness: number) {
+    let shadow = this[$shadow];
+    if (shadow != null) {
+      shadow.setIntensity(shadowIntensity);
+      shadow.setModel(this, shadowSoftness);
+    } else if (shadowIntensity > 0) {
+      shadow = new Shadow(this, shadowSoftness);
+      shadow.setIntensity(shadowIntensity);
+      this[$shadow] = shadow;
+    }
+  }
+
+  /**
+   * Sets the shadow's softness by mapping a [0, 1] softness parameter to the
+   * shadow's resolution. This involves reallocation, so it should not be
+   * changed frequently. Softer shadows are cheaper to render.
+   */
+  setShadowSoftness(softness: number) {
+    const shadow = this[$shadow];
+    if (shadow != null) {
+      shadow.setSoftness(softness);
+    }
+  }
+
+  /**
+   * The shadow must be rotated manually to match any global rotation applied to
+   * this model. The input is the global orientation about the Y axis.
+   */
+  setShadowRotation(radiansY: number) {
+    const shadow = this[$shadow];
+    if (shadow != null) {
+      shadow.setRotation(radiansY);
+    }
+  }
+
+  /**
+   * Call when updating the shadow; returns true if an update is needed and
+   * resets the state.
+   */
+  updateShadow(): boolean {
+    const shadow = this[$shadow];
+    if (shadow == null) {
+      return false;
+    } else {
+      const {needsUpdate} = shadow;
+      shadow.needsUpdate = false;
+      return needsUpdate;
+    }
+  }
+
+  /**
+   * Shift the floor vertically from the bottom of the model's bounding box by
+   * offset (should generally be negative).
+   */
+  setShadowScaleAndOffset(scale: number, offset: number) {
+    const shadow = this[$shadow];
+    if (shadow != null) {
+      shadow.setScaleAndOffset(scale, offset);
+    }
+  }
+
+  /**
+   * The following methods are for operating on the set of Hotspot objects
+   * attached to the scene. These come from DOM elements, provided to slots by
+   * the Annotation Mixin.
+   */
+  addHotspot(hotspot: Hotspot) {
+    this.add(hotspot);
+  }
+
+  removeHotspot(hotspot: Hotspot) {
+    this.remove(hotspot);
+  }
+
+  /**
+   * Helper method to apply a function to all hotspots.
+   */
+  forHotspots(func: (hotspot: Hotspot) => void) {
+    const {children} = this;
+    for (let i = 0, l = children.length; i < l; i++) {
+      const hotspot = children[i];
+      if (hotspot instanceof Hotspot) {
+        func(hotspot);
+      }
+    }
+  }
+
+  /**
+   * Update the CSS visibility of the hotspots based on whether their normals
+   * point toward the camera.
+   */
+  updateHotspots(viewerPosition: Vector3) {
+    this.forHotspots((hotspot) => {
+      view.copy(viewerPosition);
+      target.setFromMatrixPosition(hotspot.matrixWorld);
+      view.sub(target);
+      normalWorld.copy(hotspot.normal).transformDirection(this.matrixWorld);
+      if (view.dot(normalWorld) < 0) {
+        hotspot.hide();
+      } else {
+        hotspot.show();
+      }
+    });
+  }
+
+  /**
+   * Rotate all hotspots to an absolute orientation given by the input number of
+   * radians. Zero returns them to upright.
+   */
+  orientHotspots(radians: number) {
+    this.forHotspots((hotspot) => {
+      hotspot.orient(radians);
+    });
+  }
+
+  /**
+   * Set the rendering visibility of all hotspots. This is used to hide them
+   * during transitions and such.
+   */
+  setHotspotsVisibility(visible: boolean) {
+    this.forHotspots((hotspot) => {
+      hotspot.visible = visible;
+    });
   }
 }

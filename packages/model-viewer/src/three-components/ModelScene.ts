@@ -13,13 +13,13 @@
  * limitations under the License.
  */
 
-import {Camera, Color, Event as ThreeEvent, Object3D, PerspectiveCamera, Scene, Vector3} from 'three';
+import {Camera, Event as ThreeEvent, Object3D, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3} from 'three';
 
-import ModelViewerElementBase, {$needsRender, $renderer} from '../model-viewer-base.js';
-import {resolveDpr} from '../utilities.js';
+import {USE_OFFSCREEN_CANVAS} from '../constants.js';
+import ModelViewerElementBase from '../model-viewer-base.js';
 
+import {Damper, SETTLING_TIME} from './Damper.js';
 import Model, {DEFAULT_FOV_DEG} from './Model.js';
-import {Shadow} from './Shadow.js';
 
 export interface ModelLoadEvent extends ThreeEvent {
   url: string
@@ -41,7 +41,8 @@ export const IlluminationRole: {[index: string]: IlluminationRole} = {
 
 const DEFAULT_TAN_FOV = Math.tan((DEFAULT_FOV_DEG / 2) * Math.PI / 180);
 
-const $paused = Symbol('paused');
+const raycaster = new Raycaster();
+const vector3 = new Vector3();
 
 /**
  * A THREE.Scene object that takes a Model and CanvasHTMLElement and
@@ -49,28 +50,29 @@ const $paused = Symbol('paused');
  * Provides lights and cameras to be used in a renderer.
  */
 export class ModelScene extends Scene {
-  private[$paused]: boolean = false;
-
   public aspect = 1;
   public canvas: HTMLCanvasElement;
-  public shadow: Shadow|null = null;
   public shadowIntensity = 0;
   public shadowSoftness = 1;
-  public pivot: Object3D;
-  public pivotCenter: Vector3;
   public width = 1;
   public height = 1;
-  public isVisible: boolean = false;
-  public isDirty: boolean = false;
+  public isDirty = false;
   public element: ModelViewerElementBase;
-  public context: CanvasRenderingContext2D;
+  public context: CanvasRenderingContext2D|ImageBitmapRenderingContext|null =
+      null;
   public exposure = 1;
   public model: Model;
+  public canScale = true;
   public framedFieldOfView = DEFAULT_FOV_DEG;
   public activeCamera: Camera;
   // These default camera values are never used, as they are reset once the
   // model is loaded and framing is computed.
   public camera = new PerspectiveCamera(45, 1, 0.1, 100);
+
+  private goalTarget = new Vector3();
+  private targetDamperX = new Damper();
+  private targetDamperY = new Damper();
+  private targetDamperZ = new Damper();
 
   constructor({canvas, element, width, height}: ModelSceneConfig) {
     super();
@@ -79,8 +81,6 @@ export class ModelScene extends Scene {
 
     this.element = element;
     this.canvas = canvas;
-    this.context = canvas.getContext('2d')!;
-
     this.model = new Model();
 
     // These default camera values are never used, as they are reset once the
@@ -89,30 +89,27 @@ export class ModelScene extends Scene {
     this.camera.name = 'MainCamera';
 
     this.activeCamera = this.camera;
-    this.pivot = new Object3D();
-    this.pivot.name = 'Pivot';
-    this.pivotCenter = new Vector3;
 
-    this.add(this.pivot);
-    this.pivot.add(this.model);
+    this.add(this.model);
 
     this.setSize(width, height);
-    this.background = new Color(0xffffff);
 
     this.model.addEventListener(
         'model-load', (event: any) => this.onModelLoad(event));
   }
 
-  get paused() {
-    return this[$paused];
-  }
-
-  pause() {
-    this[$paused] = true;
-  }
-
-  resume() {
-    this[$paused] = false;
+  /**
+   * Function to create the context lazily, as when there is only one
+   * <model-viewer> element, the renderer's 3D context can be displayed
+   * directly. This extra context is necessary to copy the renderings into when
+   * there are more than one.
+   */
+  createContext() {
+    if (USE_OFFSCREEN_CANVAS) {
+      this.context = this.canvas.getContext('bitmaprenderer')!;
+    } else {
+      this.context = this.canvas.getContext('2d')!;
+    }
   }
 
   /**
@@ -121,7 +118,7 @@ export class ModelScene extends Scene {
   async setModelSource(
       source: string|null, progressCallback?: (progress: number) => void) {
     try {
-      await this.model.setSource(source, progressCallback);
+      await this.model.setSource(this.element, source, progressCallback);
     } catch (e) {
       throw new Error(
           `Could not set model source to '${source}': ${e.message}`);
@@ -129,37 +126,19 @@ export class ModelScene extends Scene {
   }
 
   /**
-   * Receives the size of the 2D canvas element to make according
-   * adjustments in the scene.
+   * Updates the ModelScene for a new container size in CSS pixels.
    */
   setSize(width: number, height: number) {
-    if (width !== this.width || height !== this.height) {
-      this.width = Math.max(width, 1);
-      this.height = Math.max(height, 1);
-      // In practice, invocations of setSize are throttled at the element level,
-      // so no need to throttle here:
-      const dpr = resolveDpr();
-      this.canvas.width = this.width * dpr;
-      this.canvas.height = this.height * dpr;
-      this.canvas.style.width = `${this.width}px`;
-      this.canvas.style.height = `${this.height}px`;
-      this.aspect = this.width / this.height;
-      this.frameModel();
-
-      // Immediately queue a render to happen at microtask timing. This is
-      // necessary because setting the width and height of the canvas has the
-      // side-effect of clearing it, and also if we wait for the next rAF to
-      // render again we might get hit with yet-another-resize, or worse we
-      // may not actually be marked as dirty and so render will just not
-      // happen. Queuing a render to happen here means we will render twice on
-      // a resize frame, but it avoids most of the visual artifacts associated
-      // with other potential mitigations for this problem. See discussion in
-      // https://github.com/GoogleWebComponents/model-viewer/pull/619 for
-      // additional considerations.
-      Promise.resolve().then(() => {
-        this.element[$renderer].render(performance.now());
-      });
+    if (this.width === width && this.height === height) {
+      return;
     }
+    this.width = Math.max(width, 1);
+    this.height = Math.max(height, 1);
+
+    this.aspect = this.width / this.height;
+    this.frameModel();
+
+    this.isDirty = true;
   }
 
   /**
@@ -194,56 +173,84 @@ export class ModelScene extends Scene {
   }
 
   /**
-   * Sets the rotation of the model's pivot, around its pivotCenter point.
-   */
-  setPivotRotation(radiansY: number) {
-    this.pivot.rotation.y = radiansY;
-    this.pivot.position.x = -this.pivotCenter.x;
-    this.pivot.position.z = -this.pivotCenter.z;
-    this.pivot.position.applyAxisAngle(this.pivot.up, radiansY);
-    this.pivot.position.x += this.pivotCenter.x;
-    this.pivot.position.z += this.pivotCenter.z;
-    if (this.shadow != null) {
-      this.shadow.setRotation(radiansY);
-    }
-  }
-
-  /**
-   * Gets the current rotation value of the pivot
-   */
-  getPivotRotation(): number {
-    return this.pivot.rotation.y;
-  }
-
-  /**
    * Called when the model's contents have loaded, or changed.
    */
   onModelLoad(event: {url: string}) {
     this.frameModel();
     this.setShadowIntensity(this.shadowIntensity);
-    if (this.shadow != null) {
-      this.shadow.setModel(this.model, this.shadowSoftness);
-    }
-    // Uncomment if using showShadowHelper below
-    // if (this.children.length > 1) {
-    //   (this.children[1] as CameraHelper).update();
-    // }
-    this.element[$needsRender]();
+    this.isDirty = true;
     this.dispatchEvent({type: 'model-load', url: event.url});
+  }
+
+  /**
+   * Sets the point in model coordinates the model should orbit/pivot around.
+   */
+  setTarget(modelX: number, modelY: number, modelZ: number) {
+    this.goalTarget.set(-modelX, -modelY, -modelZ);
+  }
+
+  /**
+   * Gets the point in model coordinates the model should orbit/pivot around.
+   */
+  getTarget(): Vector3 {
+    return vector3.copy(this.goalTarget).multiplyScalar(-1);
+  }
+
+  /**
+   * Shifts the model to the target point immediately instead of easing in.
+   */
+  jumpToGoal() {
+    this.updateTarget(SETTLING_TIME);
+  }
+
+  /**
+   * This should be called every frame with the frame delta to cause the target
+   * to transition to its set point.
+   */
+  updateTarget(delta: number) {
+    const goal = this.goalTarget;
+    const target = this.model.position;
+    if (!goal.equals(target)) {
+      const radius = this.model.idealCameraDistance;
+      let {x, y, z} = target;
+      x = this.targetDamperX.update(x, goal.x, delta, radius);
+      y = this.targetDamperY.update(y, goal.y, delta, radius);
+      z = this.targetDamperZ.update(z, goal.z, delta, radius);
+      this.model.position.set(x, y, z);
+      this.isDirty = true;
+    }
+  }
+
+  /**
+   * Yaw the +z (front) of the model toward the indicated world coordinates.
+   */
+  pointTowards(worldX: number, worldZ: number) {
+    const {x, z} = this.position;
+    this.yaw = Math.atan2(worldX - x, worldZ - z);
+  }
+
+  /**
+   * Yaw is the scene's orientation about the y-axis, around the rotation
+   * center.
+   */
+  set yaw(radiansY: number) {
+    this.rotation.y = radiansY;
+    this.model.setShadowRotation(radiansY);
+    this.isDirty = true;
+  }
+
+  get yaw(): number {
+    return this.rotation.y;
   }
 
   /**
    * Sets the shadow's intensity, lazily creating the shadow as necessary.
    */
   setShadowIntensity(shadowIntensity: number) {
+    shadowIntensity = Math.max(shadowIntensity, 0);
     this.shadowIntensity = shadowIntensity;
-    if (shadowIntensity > 0 && this.model.hasModel()) {
-      if (this.shadow == null) {
-        this.shadow = new Shadow(this.model, this.pivot, this.shadowSoftness);
-        this.pivot.add(this.shadow);
-        // showShadowHelper(this);
-      }
-      this.shadow.setIntensity(shadowIntensity);
+    if (this.model.hasModel()) {
+      this.model.setShadowIntensity(shadowIntensity, this.shadowSoftness);
     }
   }
 
@@ -254,8 +261,28 @@ export class ModelScene extends Scene {
    */
   setShadowSoftness(softness: number) {
     this.shadowSoftness = softness;
-    if (this.shadow != null) {
-      this.shadow.setSoftness(softness);
+    this.model.setShadowSoftness(softness);
+  }
+
+  /**
+   * This method returns the world position and model-space normal of the point
+   * on the mesh corresponding to the input pixel coordinates given relative to
+   * the model-viewer element. If the mesh is not hit, the result is null.
+   */
+  positionAndNormalFromPoint(pixelPosition: Vector2, object: Object3D = this):
+      {position: Vector3, normal: Vector3}|null {
+    raycaster.setFromCamera(pixelPosition, this.getCamera());
+    const hits = raycaster.intersectObject(object, true);
+
+    if (hits.length === 0) {
+      return null;
     }
+
+    const hit = hits[0];
+    if (hit.face == null) {
+      return null;
+    }
+
+    return {position: hit.point, normal: hit.face.normal};
   }
 }

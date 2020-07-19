@@ -13,7 +13,7 @@
  * limitations under the License.
  */
 
-import {ASTWalker, IdentNode, NumberNode, parseExpressions, numberNode} from '../../styles/parsers.js';
+import {ASTWalker, IdentNode, NumberNode, numberNode, parseExpressions} from '../../styles/parsers.js';
 import {expressionNode, functionNode, hexNode, identNode, operatorNode} from '../helpers.js';
 
 const expect = chai.expect;
@@ -32,6 +32,17 @@ suite('parsers', () => {
           numberNode(3.14, 'deg'),
           numberNode(-1, 'm'),
           numberNode(2, 'cm')
+        ])
+      ]);
+    });
+
+    test('parses exponential numbers', () => {
+      expect(parseExpressions('123e10mm 123E10 123e-3 4e+3')).to.be.eql([
+        expressionNode([
+          numberNode(123e10, 'mm'),
+          numberNode(123e10, null),
+          numberNode(123e-3, null),
+          numberNode(4e3, null)
         ])
       ]);
     });
@@ -59,19 +70,12 @@ suite('parsers', () => {
       expect(parseExpressions('rgba(255, calc(100 + var(--blue)), 0, 0.25)'))
           .to.be.eql([expressionNode([functionNode('rgba', [
             expressionNode([numberNode(255, null)]),
-            expressionNode([
-              functionNode('calc', [
-                expressionNode([
+            expressionNode([functionNode(
+                'calc', [expressionNode([
                   numberNode(100, null),
                   operatorNode('+'),
-                  functionNode('var', [
-                    expressionNode([
-                      identNode('--blue')
-                    ])
-                  ])
-                ])
-              ])
-            ]),
+                  functionNode('var', [expressionNode([identNode('--blue')])])
+                ])])]),
             expressionNode([numberNode(0, null)]),
             expressionNode([numberNode(0.25, null)]),
           ])])]);
@@ -97,17 +101,10 @@ suite('parsers', () => {
       suite('mismatched parens', () => {
         test('trailing paren is gracefully dropped', () => {
           expect(parseExpressions('calc(calc(123)))')).to.be.eql([
-            expressionNode([
-              functionNode('calc', [
-                expressionNode([
-                  functionNode('calc', [
-                    expressionNode([
-                      numberNode(123, null)
-                    ])
-                  ])
-                ])
-              ])
-            ])
+            expressionNode([functionNode(
+                'calc',
+                [expressionNode([functionNode(
+                    'calc', [expressionNode([numberNode(123, null)])])])])])
           ]);
         });
       });

@@ -14,101 +14,28 @@
  * limitations under the License.
  */
 
-import {Vector3} from 'three';
-import {CSS2DObject, CSS2DRenderer} from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import {Matrix4, Vector2} from 'three';
+import {CSS2DRenderer} from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
-import ModelViewerElementBase, {$onResize, $scene, $tick} from '../model-viewer-base.js';
-import {normalizeUnit} from '../styles/conversions.js';
-import {NumberNode, parseExpressions} from '../styles/parsers.js';
+import ModelViewerElementBase, {$needsRender, $onResize, $scene, $tick, toVector3D, Vector3D} from '../model-viewer-base.js';
+import {Hotspot, HotspotConfiguration} from '../three-components/Hotspot.js';
 import {Constructor} from '../utilities.js';
 
 const $annotationRenderer = Symbol('annotationRenderer');
-const $updateHotspots = Symbol('updateHotspots');
 const $hotspotMap = Symbol('hotspotMap');
 const $mutationCallback = Symbol('mutationCallback');
 const $observer = Symbol('observer');
 const $addHotspot = Symbol('addHotspot');
 const $removeHotspot = Symbol('removeHotspot');
 
-/**
- * Hotspots are configured by slot name, and this name must begin with "hotspot"
- * to be recognized. The position and normal strings are in the form of the
- * camera-target attribute and default to "0m 0m 0m" and "0m 1m 0m",
- * respectively.
- */
-interface HotspotConfiguration {
-  name: string;
-  position?: string;
-  normal?: string;
-}
-
-/**
- * The Hotspot object is a reference-counted slot. If decrement() returns true,
- * it should be removed from the tree so it can be garbage-collected.
- */
-export class Hotspot extends CSS2DObject {
-  public normal: Vector3;
-  private referenceCount: number;
-
-  constructor(config: HotspotConfiguration) {
-    const wrapper = document.createElement('div');
-    wrapper.classList.add('annotation-wrapper');
-    const slot = document.createElement('slot');
-    slot.name = config.name;
-    wrapper.appendChild(slot);
-    super(wrapper);
-    this.normal = new Vector3(0, 1, 0);
-    this.updatePosition(config.position);
-    this.updateNormal(config.normal);
-    this.referenceCount = 1;
-  }
-
-  /**
-   * Call this when adding elements to the same slot to keep track.
-   */
-  increment() {
-    ++this.referenceCount;
-  }
-
-  /**
-   * Call this when removing elements from the slot; returns true when the slot
-   * is unused.
-   */
-  decrement(): boolean {
-    return --this.referenceCount <= 0;
-  }
-
-  /**
-   * Change the position of the hotspot to the input string, in the same format
-   * as the data-position attribute.
-   */
-  updatePosition(position?: string) {
-    if (position == null)
-      return;
-    const positionNodes = parseExpressions(position)[0].terms;
-    for (let i = 0; i < 3; ++i) {
-      this.position.setComponent(
-          i, normalizeUnit(positionNodes[i] as NumberNode<'m'>).number);
-    }
-  }
-
-  /**
-   * Change the hotspot's normal to the input string, in the same format as the
-   * data-normal attribute.
-   */
-  updateNormal(normal?: string) {
-    if (normal == null)
-      return;
-    const normalNodes = parseExpressions(normal)[0].terms;
-    for (let i = 0; i < 3; ++i) {
-      this.normal.setComponent(
-          i, normalizeUnit(normalNodes[i] as NumberNode<'m'>).number);
-    }
-  }
-}
+// Used internally by positionAndNormalFromPoint()
+const pixelPosition = new Vector2();
+const worldToModel = new Matrix4();
 
 export declare interface AnnotationInterface {
   updateHotspot(config: HotspotConfiguration): void;
+  positionAndNormalFromPoint(pixelX: number, pixelY: number):
+      {position: Vector3D, normal: Vector3D}|null
 }
 
 /**
@@ -135,6 +62,7 @@ export const AnnotationMixin = <T extends Constructor<ModelViewerElementBase>>(
           (mutation as MutationRecord).removedNodes.forEach((node) => {
             this[$removeHotspot](node);
           });
+          this[$needsRender]();
         }
       });
     };
@@ -143,9 +71,11 @@ export const AnnotationMixin = <T extends Constructor<ModelViewerElementBase>>(
     constructor(...args: Array<any>) {
       super(...args);
 
+      const shadowRoot = this.shadowRoot!;
       const {domElement} = this[$annotationRenderer];
       domElement.classList.add('annotation-container');
-      this.shadowRoot!.querySelector('.container')!.appendChild(domElement);
+      shadowRoot.querySelector('.container')!.appendChild(domElement);
+      domElement.appendChild(shadowRoot.querySelector('.default')!);
     }
 
     connectedCallback() {
@@ -194,10 +124,42 @@ export const AnnotationMixin = <T extends Constructor<ModelViewerElementBase>>(
       hotspot.updateNormal(config.normal);
     }
 
+    /**
+     * This method returns the model position and normal of the point on the
+     * mesh corresponding to the input pixel coordinates given relative to the
+     * model-viewer element. The position and normal are returned as strings in
+     * the format suitable for putting in a hotspot's data-position and
+     * data-normal attributes. If the mesh is not hit, the result is null.
+     */
+    positionAndNormalFromPoint(pixelX: number, pixelY: number):
+        {position: Vector3D, normal: Vector3D}|null {
+      const scene = this[$scene];
+      const {width, height, model} = scene;
+      pixelPosition.set(pixelX / width, pixelY / height)
+          .multiplyScalar(2)
+          .subScalar(1);
+      pixelPosition.y *= -1;
+
+      const hit = scene.positionAndNormalFromPoint(pixelPosition);
+      if (hit == null) {
+        return null;
+      }
+
+      worldToModel.getInverse(model.matrixWorld);
+      const position = toVector3D(hit.position.applyMatrix4(worldToModel));
+      const normal = toVector3D(hit.normal);
+      return {position: position, normal: normal};
+    }
+
     [$tick](time: number, delta: number) {
       super[$tick](time, delta);
-      this[$updateHotspots]();
-      this[$annotationRenderer].render(this[$scene], this[$scene].activeCamera);
+      const scene = this[$scene];
+      const camera = scene.getCamera();
+
+      if (scene.isDirty) {
+        scene.model.updateHotspots(camera.position);
+        this[$annotationRenderer].render(scene, camera);
+      }
     }
 
     [$onResize](e: {width: number, height: number}) {
@@ -205,23 +167,7 @@ export const AnnotationMixin = <T extends Constructor<ModelViewerElementBase>>(
       this[$annotationRenderer].setSize(e.width, e.height);
     }
 
-    [$updateHotspots]() {
-      const {children} = this[$scene].pivot;
-      for (let i = 0, l = children.length; i < l; i++) {
-        const object = children[i];
-        if (object instanceof Hotspot) {
-          const view = this[$scene].activeCamera.position.clone();
-          view.sub(object.position);
-          if (view.dot(object.normal) < 0) {
-            object.element.classList.add('hide');
-          } else {
-            object.element.classList.remove('hide');
-          }
-        }
-      }
-    }
-
-    [$addHotspot](node: Node) {
+    private[$addHotspot](node: Node) {
       if (!(node instanceof HTMLElement &&
             node.slot.indexOf('hotspot') === 0)) {
         return;
@@ -235,14 +181,19 @@ export const AnnotationMixin = <T extends Constructor<ModelViewerElementBase>>(
         hotspot = new Hotspot({
           name: node.slot,
           position: node.dataset.position,
-          normal: node.dataset.normal
+          normal: node.dataset.normal,
         });
         this[$hotspotMap].set(node.slot, hotspot);
-        this[$scene].pivot.add(hotspot);
+        this[$scene].model.addHotspot(hotspot);
+        // This happens automatically in render(), but we do it early so that
+        // the slots appear in the shadow DOM and the elements get attached,
+        // allowing us to dispatch events on them.
+        this[$annotationRenderer].domElement.appendChild(hotspot.element);
       }
+      this[$scene].isDirty = true;
     }
 
-    [$removeHotspot](node: Node) {
+    private[$removeHotspot](node: Node) {
       if (!(node instanceof HTMLElement)) {
         return;
       }
@@ -254,9 +205,10 @@ export const AnnotationMixin = <T extends Constructor<ModelViewerElementBase>>(
       }
 
       if (hotspot.decrement()) {
-        this[$scene].pivot.remove(hotspot);
+        this[$scene].model.removeHotspot(hotspot);
         this[$hotspotMap].delete(node.slot);
       }
+      this[$scene].isDirty = true;
     }
   }
 

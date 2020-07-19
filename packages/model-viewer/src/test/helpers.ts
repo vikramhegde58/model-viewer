@@ -12,7 +12,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import {EventDispatcher, Texture} from 'three';
+import {EventDispatcher, Group, Texture} from 'three';
+import {GLTFParser} from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 import {ExpressionNode, ExpressionTerm, FunctionNode, HexNode, IdentNode, Operator, OperatorNode} from '../styles/parsers.js';
 import {deserializeUrl} from '../utilities.js';
@@ -121,7 +122,7 @@ export const dispatchSyntheticEvent =
     };
 
 
-export const ASSETS_DIRECTORY = '../shared-assets/';
+export const ASSETS_DIRECTORY = '../base/shared-assets/';
 
 /**
  * Returns the full path for an asset by name. This is a convenience helper so
@@ -207,3 +208,21 @@ export const operatorNode = (value: Operator): OperatorNode =>
 export const functionNode =
     (name: string, args: Array<ExpressionNode>): FunctionNode =>
         ({type: 'function', name: identNode(name), arguments: args});
+
+export const createFakeThreeGLTF = () => {
+  const scene = new Group();
+
+  return {
+    animations: [],
+    scene,
+    scenes: [scene],
+    cameras: [],
+    asset: {},
+    parser: {
+      cache: new Map(),
+      json: {scene: 0, scenes: [{}], materials: [], nodes: []},
+      associations: new Map()
+    } as unknown as GLTFParser,
+    userData: {}
+  };
+};

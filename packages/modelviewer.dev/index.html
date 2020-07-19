@@ -19,6 +19,7 @@
 <head>
   <title>&lt;model-viewer&gt;</title>
   <meta charset="utf-8">
+  <meta name="description" content="Easily display interactive 3D models on the web and in AR">
   <meta name="viewport" content="width=device-width, user-scalable=no,
   minimum-scale=1.0, maximum-scale=1.0">
   <link type="text/css" href="styles/examples.css" rel="stylesheet" />
@@ -35,14 +36,8 @@
   <!-- 💁 OPTIONAL: Resize Observer polyfill improves resize behavior in non-Chrome browsers -->
   <script src="node_modules/resize-observer-polyfill/dist/ResizeObserver.js"></script>
 
-  <!-- 💁 OPTIONAL: Fullscreen polyfill is needed to fully support AR features -->
-  <script src="node_modules/fullscreen-polyfill/dist/fullscreen.polyfill.js"></script>
-
   <!-- 💁 OPTIONAL: The :focus-visible polyfill removes the focus ring for some input types -->
   <script src="node_modules/focus-visible/dist/focus-visible.js" defer></script>
-
-  <!-- 💁 OPTIONAL: Include prismatic.js for Magic Leap support -->
-  <!--<script src="node_modules/@magicleap/prismatic/prismatic.min.js"></script>-->
 </head>
 <body>
 
@@ -60,16 +55,20 @@
         <example-snippet inert-script stamp-to="demo-container" highlight-as="html">
           <template>
 <!-- Import the component -->
-<script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.js"></script>
+<script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
 <script type="noexecute" nomodule src="https://unpkg.com/@google/model-viewer/dist/model-viewer-legacy.js"></script>
 <!-- Use it like any other HTML element -->
-<model-viewer src="shared-assets/models/Astronaut.glb" alt="A 3D model of an astronaut" auto-rotate camera-controls background-color="#455A64"></model-viewer>
+<model-viewer src="shared-assets/models/Astronaut.glb" alt="A 3D model of an astronaut" auto-rotate camera-controls></model-viewer>
           </template>
         </example-snippet>
 
         <div id="section-examples">
           <h3 class="grouping-title border-bottom">Examples</h3>
           <ul id="list-example">
+
+            <li><a href="examples/webxr.html"><h4>WebXR Demo</h4></a></li>
+
+            <li><a href="examples/annotations.html"><h4>Annotations</h4></a></li>
 
             <li><a href="examples/animation.html"><h4>Animation</h4></a></li>
 
@@ -85,9 +84,11 @@
 
             <li><a href="examples/customizing-ui.html"><h4>Customizing UI</h4></a></li>
 
-            <li><a href="examples/annotations.html"><h4>Annotations</h4></a></li>
-			
-			      <li><a href="examples/tester.html"><h4>Interactive Example</h4></a></li>
+            <li><a href="examples/scene-graph.html"><h4>Scene Graph</h4></a></li>
+
+            <li><a href="examples/tester.html"><h4>Interactive Example</h4></a></li>
+
+            <li><a href="./node_modules/@google/model-viewer-space-opera/index.html"><h4>Model Editor</h4></a></li>
           </ul>
         </div>
 
@@ -129,9 +130,17 @@
             </li>
             <li>
               <div>ar</div>
-              <p>Enable the ability to launch
-              <a href="https://developers.google.com/ar/develop/java/scene-viewer">Scene Viewer</a>
-              on supported devices.</p>
+              <p>Enable the ability to launch AR experiences on supported devices.</p>
+            </li>
+            <li>
+              <div>ar-modes</div>
+              <p>A prioritized list of the types of AR experiences to enable, if available; see
+              <a href="https://github.com/GoogleWebComponents/model-viewer#augmented-reality">
+              Augmented Reality</a>.
+              Allowed values are "webxr", to launch the AR experience in the browser, "scene-viewer",
+              to launch the <a href="https://developers.google.com/ar/develop/java/scene-viewer">Scene Viewer</a>
+              app, "quick-look", to launch the iOS Quick Look app. You can specify any number of modes separated by
+              whitespace. Defaults to "webxr scene-viewer quick-look".
             </li>
             <li>
               <div>ar-scale</div>
@@ -158,19 +167,13 @@
               the first animation. Defaults to false.</p>
             </li>
             <li>
-              <div>background-color</div>
-              <p>Sets the background color of the scene when viewed inline.
-              Takes any valid CSS color string.</p>
-            </li>
-            <li>
               <div>skybox-image</div>
               <p>Sets the background image of the scene when viewed inline.
               Takes a URL to an <a
               href="https://en.wikipedia.org/wiki/Equirectangular_projection">equirectangular
               projection image</a> that's used for the skybox, as well as
               applied as an environment map on the model. Supports png, jpg and
-              hdr (recommended) images. Setting skybox-image supercedes
-              background-color.</p>
+              hdr (recommended) images.</p>
             </li>
             <li>
               <div>camera-controls</div>
@@ -289,15 +292,6 @@
               Reality</a>.</p>
             </li>
             <li>
-              <div>magic-leap</div>
-              <p>Enables the ability to view models in AR when viewing content
-              on <a href="https://magicleaphelio.com/">Magic Leap's Helio</a>
-              browser, requires that src is a GLB model, and requires the
-              inclusion of the <a
-              href="https://www.npmjs.com/package/@magicleap/prismatic">@magicleap/prismatic</a>
-              library.</p>
-            </li>
-            <li>
               <div>max-camera-orbit</div>
               <p>Set the maximum orbital values of the camera. Takes values in
                 the same form as camera-orbit, but does not support env().
@@ -324,16 +318,22 @@
             </li>
             <li>
               <div>poster</div>
-              <p>Displays an image instead of the model. See <a
-              href="https://github.com/GoogleWebComponents/model-viewer#on-loading">On
-              Loading</a> for more information.</p>
+              <p>Displays an image instead of the model, useful for showing the
+                user something before a model is loaded and ready to render. If
+                you use a poster with transparency, you may also want to set
+                --poster-color to transparent so that the background shows
+                through. See <a href="./examples/lazy-loading.html">our section
+                on lazy loading</a> for examples.</p>
             </li>
             <li>
-              <div>preload</div>
-              <p>When poster is also enabled, the model will be downloaded
-              before user action. See <a
-              href="https://github.com/GoogleWebComponents/model-viewer#on-loading">On
-              Loading</a> for more information.</p>
+              <div>loading</div>
+              <p>An enumerable attribute describing under what conditions the
+              model should be preloaded. The supported values are "auto", "lazy"
+              and "eager". Auto is equivalent to lazy, which loads the model
+              when it is near the viewport for reveal = "auto", and when interacted
+              with for reveal = "interaction". Eager loads the model immediately.
+              See <a href="./examples/lazy-loading.html">our section on lazy loading</a>
+              for examples. Defaults to "auto".</p>
             </li>
             <li>
               <div>quick-look-browsers</div>
@@ -344,13 +344,13 @@
             </li>
             <li>
               <div>reveal</div>
-              <p>This attribute controls whether or not the model should be
-              automatically revealed when loaded. It currently supports two
-              values: "auto" and "interaction". If reveal is set to
+              <p>This attribute controls when the model should be revealed. It currently supports three
+              values: "auto", "interaction", and "manual". If reveal is set to
               "interaction", &lt;model-viewer&gt; will wait until the user
               interacts with the poster before loading and revealing the model.
-              Otherwise, the model will be revealed as soon as it is done
-              loading and rendering. Defaults to "auto".</p>
+              If set to "auto", the model will be revealed as soon as it is done
+              loading and rendering. If set to "manual", the model will remain hidden
+              until dismissPoster() is called. Defaults to "auto".</p>
             </li>
             <li>
               <div>shadow-intensity</div>
@@ -359,20 +359,9 @@
             </li>
             <li>
               <div>shadow-softness</div>
-              <p>Controls the blurriness of the shadow. Set to 0 for hard shadows. 
-              Softness should not be changed every frame as it incurs a 
+              <p>Controls the blurriness of the shadow. Set to 0 for hard shadows.
+              Softness should not be changed every frame as it incurs a
               performance cost. Softer shadows render faster. Defaults to 1.</p>
-            </li>
-            <li>
-              <div>unstable-webxr</div>
-              <p>Enables the ability to view the model in AR via the
-              experimental <a
-              href="https://github.com/immersive-web/webxr">WebXR Device
-              API</a>, currently <a
-              href="https://developers.google.com/web/updates/2018/06/ar-for-the-web">implemented
-              only in Chrome Canary</a>. See <a
-              href="https://github.com/GoogleWebComponents/model-viewer#augmented-reality">Augmented
-              Reality</a>.</p>
             </li>
           </ul>
 
@@ -380,8 +369,8 @@
           Parameters that are required for display.</p>
           <p style="color:rgba(0,0,0,.54);">Note: All attributes have a
           corresponding property in camel-case format. For example, the
-          background-color attribute can also be configured using the
-          backgroundColor property.</p>
+          skybox-image attribute can also be configured using the
+          skyboxImage property.</p>
 
         </div>
 
@@ -395,18 +384,34 @@
               to force the button to be hidden. Defaults to block.</p>
             </li>
             <li>
+              <div>ar-status</div>
+              <p>This read-only attribute enables DOM content to be styled based
+              on the status of the WebXR AR presentation. Possible values include
+              'not-presenting', 'session-started', and 'object-placed'. For instance,
+              a prompt for the user to move their phone until the object is
+              successfully placed in their space can be shown by scoping a CSS rule
+              to model-viewer[ar-status="session-started"]. Setting this attribute
+              has no effect.</p>
+            </li>
+            <li>
               <div>--interaction-prompt-display</div>
               <p>Sets the display property of the interaction prompt. Intended
               to be used to force the prompt to be hidden. Defaults to flex.</p>
             </li>
             <li>
-              <div>--min-opacity</div>
+              <div>--min-hotspot-opacity</div>
               <p>Sets the opacity of hidden hotspots. Defaults to 0.25.</p>
             </li>
             <li>
+              <div>--max-hotspot-opacity</div>
+              <p>Sets the opacity of visible hotspots. Defaults to 1.</p>
+            </li>
+            <li>
               <div>--poster-color</div>
-              <p>Sets the background-color of the poster. Falls back to
-              --background-color if set. Defaults to #fff.</p>
+              <p>Sets the background-color of the poster. You may wish to set
+                this to transparent if you are using a seamless poster with
+                transparency (so that the background color of
+                &lt;model-viewer&gt; shows through). Defaults to #fff.</p>
             </li>
             <li>
               <div>--poster-image</div>
@@ -444,6 +449,17 @@
               set it to 0, it will reset an animation to the beginning.</p>
             </li>
             <li>
+              <div>loaded</div>
+              <p>This property is read-only. It returns true if the load event
+              below has fired since the last src change.</p>
+            </li>
+            <li>
+              <div>modelIsVisible</div>
+              <p>This property is read-only. It returns true if the element is
+              visible on the page (assuming there is an IntersectionObserver) and the
+              poster has been dismissed.</p>
+            </li>
+            <li>
               <div>paused</div>
               <p>This property is read-only. It returns true if animations are
               paused. It returns false if animations are playing. Animations
@@ -457,6 +473,12 @@
               loaded from a Google CDN.</p>
             </li>
             <li>
+              <div>ModelViewer.minimumRenderScale</div>
+              <p>This static, writable property sets &lt;model-viewer&gt;'s minimum rendering
+              scale factor as it dynamically changes resolution to maintain framerate. Turn
+              off this effect by setting to 1. Defaults to 0.5.</p>
+            </li>
+            <li>
               <div>ModelViewer.modelCacheSize</div>
               <p>This static, writable property sets &lt;model-viewer&gt;'s internal
               glTF model cache size, controlling number of individual models that should
@@ -465,7 +487,7 @@
               if they are not being used by a &lt;model-viewer&gt; element in the document.
               Note also that the cache size is measured in number of glTF models, not bytes!
               This is important to keep in mind, since any two models may have wildly
-              different byte sizes.</p>
+              different byte sizes. Default is 5.</p>
             </li>
           </ul>
 
@@ -487,6 +509,17 @@
               <p>Dismisses the poster, causing the model to load and render if
               necessary. This is currently effectively the same as interacting
               with the poster via user input.</p>
+            </li>
+            <li>
+              <div>exportScene(options)</div>
+              <p>Exports the model in glTF or GLB formats. Returns a promise
+              that resolves in a Blob of type "application/octet-stream" or
+              "application/json" depending on the export format.
+              For a list of parameters see <a href='https://threejs.org/docs/index.html#examples/en/exporters/GLTFExporter.parse'>
+              GLTF exporter</a> documentation, with the exception that all
+              animations are automatically exported and truncateDrawRange
+              defaults to true.
+              </p>
             </li>
             <li>
               <div>getCameraOrbit()</div>
@@ -513,13 +546,22 @@
             </li>
             <li>
               <div>getFieldOfView()</div>
-              <p>Returns the realtime camera vertical field of view in degrees. 
-              This value may differ from the value configured with the field-of-view 
+              <p>Returns the realtime camera vertical field of view in degrees.
+              This value may differ from the value configured with the field-of-view
               attribute on account of user interaction or camera interpolation.</p>
             </li>
             <li>
+              <div>positionAndNormalFromPoint(pixelX, pixelY)</div>
+              <p>Returns the world position and normal of the point on the mesh
+              corresponding to the input pixel coordinates given relative to the
+              model-viewer element. The position and normal are returned as
+              Vector3D, which has a method toString() that outputs a format
+              suitable for putting in a hotspot's data-position and data-normal
+              attributes. The function returns null if no object is hit.</p>
+            </li>
+            <li>
               <div>jumpCameraToGoal()</div>
-              <p>Changes the camera to its last configured goal state immediately on 
+              <p>Changes the camera to its last configured goal state immediately on
               the next update instead of interpolating the motion over time.</p>
             </li>
             <li>
@@ -549,6 +591,16 @@
               is enabled. The new value of the turntable rotation will be 0 after
               this method is invoked, but the model may not update until the next
               render frame.</p>
+            </li>
+            <li>
+              <div>resetInteractionPrompt()</div>
+              <p>Typically, the interaction prompt will only display once and then
+              stops displaying after the user interacts with the 3D model for the
+              first time. You can invoke this method in order to reset the interaction
+              prompt after it has already been displayed. Doing so will cause it to
+              display once again when the interaction-prompt display conditions have
+              been met.
+              </p>
             </li>
             <li>
               <div>toDataURL(type, encoderOptions)</div>
@@ -590,6 +642,14 @@
 
           <ul class="list-attribute">
             <li>
+              <div>ar-status</div>
+              <p>Fired when the ar-status attribute above fires. The event.detail.status
+              property will be set to the same value as the ar-status attribute, either
+              'not-presenting', 'session-started', or 'object-placed'. This event is
+              only enabled for WebXR AR sessions.
+              </p>
+            </li>
+            <li>
               <div>camera-change</div>
               <p>Fired when the camera position and/or field of view have
               changed. If the change occurred due to user interaction, the
@@ -623,12 +683,9 @@
             <li>
               <div>model-visibility</div>
               <p>This event is fired when the visibility of the model changes. When the
-              model is loaded, able to be rendered and fully visible (e.g., the poster is no longer
-              visible), this event will fire and <span class="attribute">event.detail.visible</span>
-              will be "true". Note that this event will fire regardless of whether the model is 
-              present in the viewport. This means that the model may not be rendered yet (as we
-              do not render models that are outside of the viewport) even though the event says
-              that the model is visible.</p>
+              model is loaded, the element is in the viewport (assuming there is an
+              IntersectionObserver), and the poster has been dismissed, this event will fire
+              and <span class="attribute">event.detail.visible</span> will be "true".</p>
             </li>
             <li>
               <div>poster-visibility</div>
@@ -649,7 +706,7 @@
             </li>
             <li>
               <div>preload</div>
-              <p>When preload is enabled this event is fired when preloading is done.</p>
+              <p>When loading = "eager" this event is fired when preloading is done.</p>
             </li>
           </ul>
 
@@ -738,16 +795,6 @@
               <td><img class="icon-check"></td>
             </tr>
             <tr>
-              <td>Fullscreen API</td>
-              <td><img class="icon-check"></td>
-              <td><img class="icon-check"></td>
-              <td><img class="icon-warning"></td>
-              <td><img class="icon-check"></td>
-              <td><img class="icon-warning"></td>
-              <td><img class="icon-warning"></td>
-              <td><img class="icon-warning"></td>
-            </tr>
-            <tr>
               <td>:focus-visible</td>
               <td><img class="icon-warning"></td>
               <td><img class="icon-warning"></td>
@@ -760,8 +807,8 @@
           </table>
 
           <p class="browser-support-desc">These browser features are
-          <b>optional</b> and are only needed if you wish to use the
-          unstable-webxr feature:</p>
+          <b>optional</b> and are only needed if you wish to use
+          webxr in ar-modes:</p>
           <table class="browser-support">
             <tr>
               <th>Feature</th>
@@ -773,11 +820,11 @@
               <th><img class="logo-ie" title="IE 11" alt="IE 11"></th>
               <th><img class="logo-samsung" title="Samsung Internet"></th>
             </tr>
-            
+
             <tr>
               <td>WebXR Device API</td>
-              <td><img class="icon-na"></td>
               <td><img class="icon-flag"></td>
+              <td><img class="icon-check"></td>
               <td><img class="icon-na"></td>
               <td><img class="icon-na"></td>
               <td><img class="icon-na"></td>
@@ -786,8 +833,8 @@
             </tr>
             <tr>
               <td>WebXR HitTest API</td>
-              <td><img class="icon-na"></td>
               <td><img class="icon-flag"></td>
+              <td><img class="icon-check"></td>
               <td><img class="icon-na"></td>
               <td><img class="icon-na"></td>
               <td><img class="icon-na"></td>
@@ -809,7 +856,7 @@
         licensed under <a href="https://creativecommons.org/licenses/by/2.0/">CC-BY</a>.
       </li>
     </ul>
-    <div style="margin-top:24px;" class="copyright">©Copyright 2018 Google Inc. Licensed under the Apache License 2.0.</div>
+    <div style="margin-top:24px;" class="copyright">©Copyright 2018-2020 Google Inc. Licensed under the Apache License 2.0.</div>
     <div><a href="https://github.com/GoogleWebComponents/model-viewer">Github</a> ∙ <a href="https://model-viewer.glitch.me/">Glitch</a> ∙ <a href="https://github.com/GoogleWebComponents/model-viewer/issues">Bug report</a></div>
   </div>
 

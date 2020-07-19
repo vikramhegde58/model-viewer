@@ -13,10 +13,11 @@
  * limitations under the License.
  */
 
-import {Color, Scene, Texture} from 'three';
+import {Texture} from 'three';
 
-import {EnvironmentInterface, EnvironmentMixin} from '../../features/environment.js';
+import {BASE_OPACITY, EnvironmentInterface, EnvironmentMixin} from '../../features/environment.js';
 import ModelViewerElementBase, {$scene} from '../../model-viewer-base.js';
+import {$shadow} from '../../three-components/Model.js';
 import {ModelScene} from '../../three-components/ModelScene.js';
 import {Renderer} from '../../three-components/Renderer.js';
 import {assetPath, rafPasses, textureMatchesMeta, timePasses, waitForEvent} from '../helpers.js';
@@ -32,14 +33,6 @@ const MULTI_MATERIAL_MODEL_URL = assetPath('models/Triangle.gltf');
 const backgroundHasMap =
     (scene: ModelScene, url: string|null) => {
       return textureMatchesMeta((scene.background as Texture), {url: url});
-    }
-
-const backgroundHasColor =
-    (scene: Scene, hex: string) => {
-      if (!scene.background || !(scene.background as any).isColor) {
-        return false;
-      }
-      return (scene.background as Color).getHexString() === hex;
     }
 
 const modelUsingEnvMap =
@@ -87,24 +80,13 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
 
   BasicSpecTemplate(() => ModelViewerElement, () => tagName);
 
-  test('has default background if no skybox-image or background-color', () => {
-    expect(backgroundHasColor(scene, 'ffffff')).to.be.equal(true);
-  });
-
-  test(
-      'has default background if no skybox-image or background-color when in DOM',
-      async () => {
-        document.body.appendChild(element);
-        await timePasses();
-        expect(backgroundHasColor(scene, 'ffffff')).to.be.equal(true);
-      });
-
   test('only generates an environment when in the render tree', async () => {
     let environmentChangeCount = 0;
     const environmentChangeHandler = () => environmentChangeCount++;
     element.addEventListener('environment-change', environmentChangeHandler);
     element.style.display = 'none';
-    document.body.appendChild(element);
+    element.src = MODEL_URL;
+    document.body.insertBefore(element, document.body.firstChild);
     await rafPasses();
     expect(environmentChangeCount).to.be.equal(0);
     element.style.display = 'block';
@@ -119,7 +101,7 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
       setup(async () => {
         let onLoad = waitForLoadAndEnvMap(element);
         element.src = MODEL_URL;
-        document.body.appendChild(element);
+        document.body.insertBefore(element, document.body.firstChild);
 
         environmentChanges = 0;
         scene.model.addEventListener('envmap-update', () => {
@@ -130,10 +112,6 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
 
       teardown(() => {
         document.body.removeChild(element);
-      });
-
-      test('displays default background', async function() {
-        expect(backgroundHasColor(scene, 'ffffff')).to.be.equal(true);
       });
 
       test('applies a generated environment map on model', async function() {
@@ -152,7 +130,7 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
         let onLoad = waitForLoadAndEnvMap(element);
         element.src = MODEL_URL;
         element.skyboxImage = BG_IMAGE_URL;
-        document.body.appendChild(element);
+        document.body.insertBefore(element, document.body.firstChild);
         await onLoad;
       });
 
@@ -166,13 +144,6 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
 
       test('applies the image as an environment map', async function() {
         expect(modelUsingEnvMap(scene, element.skyboxImage)).to.be.ok;
-      });
-
-      suite('and a background-color property', () => {
-        setup(async () => {
-          element.backgroundColor = '#ff0077';
-          await timePasses();
-        });
       });
 
       suite('on a model with multi-material meshes', () => {
@@ -190,42 +161,10 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
     });
   });
 
-  suite('with a background-color property', () => {
-    suite('and a src property', () => {
-      setup(async () => {
-        let onLoad = waitForLoadAndEnvMap(element);
-        element.src = MODEL_URL;
-        element.backgroundColor = '#ff0077';
-        document.body.appendChild(element);
-        await onLoad;
-      });
-
-      teardown(() => {
-        document.body.removeChild(element);
-      });
-
-      test('displays background with the correct color', async function() {
-        expect(backgroundHasColor(scene, 'ff0077')).to.be.ok;
-      });
-
-      test('applies a generated environment map on model', async function() {
-        expect(modelUsingEnvMap(scene, null)).to.be.ok;
-      });
-
-      test(
-          'displays background with correct color after attaching to DOM',
-          async function() {
-            document.body.appendChild(element);
-            await timePasses();
-            expect(backgroundHasColor(scene, 'ff0077')).to.be.ok;
-          });
-    });
-  });
-
   suite('exposure', () => {
     setup(async () => {
       element.src = MODEL_URL;
-      document.body.appendChild(element);
+      document.body.insertBefore(element, document.body.firstChild);
       await waitForEvent(element, 'load');
       scene.visible = true;
     });
@@ -252,7 +191,7 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
   suite('shadow-intensity', () => {
     setup(async () => {
       element.src = MODEL_URL;
-      document.body.appendChild(element);
+      document.body.insertBefore(element, document.body.firstChild);
       await waitForEvent(element, 'load');
     });
 
@@ -263,8 +202,8 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
     test('changes the opacity of the static shadow', async () => {
       element.shadowIntensity = 1.0;
       await timePasses();
-      const newIntensity = scene.shadow!.getIntensity();
-      expect(newIntensity).to.be.eq(1.0);
+      const newIntensity = scene.model[$shadow]!.getIntensity();
+      expect(newIntensity).to.be.eq(BASE_OPACITY);
     });
   });
 
@@ -272,9 +211,8 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
     setup(async () => {
       let onLoad = waitForLoadAndEnvMap(element);
       element.setAttribute('src', MODEL_URL);
-      element.setAttribute('background-color', '#ff0077');
       element.setAttribute('environment-image', HDR_BG_IMAGE_URL);
-      document.body.appendChild(element);
+      document.body.insertBefore(element, document.body.firstChild);
       await onLoad;
     });
 
@@ -299,13 +237,12 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
     });
   });
 
-  suite('with background-color and skybox-image properties', () => {
+  suite('with skybox-image property', () => {
     setup(async () => {
       let onLoad = waitForLoadAndEnvMap(element);
       element.setAttribute('src', MODEL_URL);
-      element.setAttribute('background-color', '#ff0077');
       element.setAttribute('skybox-image', HDR_BG_IMAGE_URL);
-      document.body.appendChild(element);
+      document.body.insertBefore(element, document.body.firstChild);
       await onLoad;
     });
 
@@ -357,8 +294,8 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
           expect(modelUsingEnvMap(scene, ALT_BG_IMAGE_URL)).to.be.ok;
         });
 
-        test('displays background with background-color', async function() {
-          expect(backgroundHasColor(scene, 'ff0077')).to.be.ok;
+        test('removes the background', async function() {
+          expect(scene.background).to.be.null;
         });
       });
     });
@@ -370,8 +307,8 @@ suite('ModelViewerElementBase with EnvironmentMixin', () => {
         await envMapChanged;
       });
 
-      test('displays background with background-color', async function() {
-        expect(backgroundHasColor(scene, 'ff0077')).to.be.ok;
+      test('removes the background', async function() {
+        expect(scene.background).to.be.null;
       });
 
       test('reapplies generated environment map on model', async function() {

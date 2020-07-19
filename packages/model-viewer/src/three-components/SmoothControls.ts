@@ -12,15 +12,16 @@
  * limitations under the License.
  */
 
-import {Euler, Event as ThreeEvent, EventDispatcher, PerspectiveCamera, Spherical, Vector3} from 'three';
+import {Euler, Event as ThreeEvent, EventDispatcher, PerspectiveCamera, Spherical} from 'three';
 
 import {clamp} from '../utilities.js';
+import {Damper, SETTLING_TIME} from './Damper.js';
 
 export type EventHandlingBehavior = 'prevent-all'|'prevent-handled';
 export type InteractionPolicy = 'always-allow'|'allow-when-focused';
 export type TouchMode = 'rotate'|'zoom';
 
-interface Pointer {
+export interface Pointer {
   clientX: number, clientY: number,
 }
 
@@ -60,8 +61,6 @@ export const DEFAULT_OPTIONS = Object.freeze<SmoothControlsOptions>({
   interactionPolicy: 'always-allow'
 });
 
-const $velocity = Symbol('v');
-
 // Internal orbital position state
 const $spherical = Symbol('spherical');
 const $goalSpherical = Symbol('goalSpherical');
@@ -71,11 +70,6 @@ const $radiusDamper = Symbol('radiusDamper');
 const $logFov = Symbol('fov');
 const $goalLogFov = Symbol('goalLogFov');
 const $fovDamper = Symbol('fovDamper');
-const $target = Symbol('target');
-const $goalTarget = Symbol('goalTarget');
-const $targetDamperX = Symbol('targetDamperX');
-const $targetDamperY = Symbol('targetDamperY');
-const $targetDamperZ = Symbol('targetDamperZ');
 
 const $options = Symbol('options');
 const $touchMode = Symbol('touchMode');
@@ -85,6 +79,7 @@ const $userAdjustOrbit = Symbol('userAdjustOrbit');
 const $isUserChange = Symbol('isUserChange');
 const $isStationary = Symbol('isMoving');
 const $moveCamera = Symbol('moveCamera');
+const $isUserPointing = Symbol('isUserPointing');
 
 // Pointer state
 const $pointerIsDown = Symbol('pointerIsDown');
@@ -116,10 +111,7 @@ const $handleKey = Symbol('handleKey');
 // Constants
 const TOUCH_EVENT_RE = /^touch(start|end|move)$/;
 const KEYBOARD_ORBIT_INCREMENT = Math.PI / 8;
-const ZOOM_SENSITIVITY = 0.1;
-const DECAY_MILLISECONDS = 50;
-const NATURAL_FREQUENCY = 1 / DECAY_MILLISECONDS;
-const NIL_SPEED = 0.0002 * NATURAL_FREQUENCY;
+const ZOOM_SENSITIVITY = 0.04;
 
 export const KeyCode = {
   PAGE_UP: 33,
@@ -149,52 +141,9 @@ export interface ChangeEvent extends ThreeEvent {
   source: ChangeSource,
 }
 
-/**
- * The Damper class is a generic second-order critically damped system that does
- * one linear step of the desired length of time. The only parameter is
- * DECAY_MILLISECONDS, which should be adjustable: TODO(#580). This common
- * parameter makes all states converge at the same rate regardless of scale.
- * xNormalization is a number to provide the rough scale of x, such that
- * NIL_SPEED clamping also happens at roughly the same convergence for all
- * states.
- */
-export class Damper {
-  private[$velocity]: number = 0;
-
-  update(
-      x: number, xGoal: number, timeStepMilliseconds: number,
-      xNormalization: number): number {
-    if (x == null) {
-      return xGoal;
-    }
-    if (x === xGoal && this[$velocity] === 0) {
-      return xGoal;
-    }
-    if (timeStepMilliseconds < 0) {
-      return x;
-    }
-    // Exact solution to a critically damped second-order system, where:
-    // acceleration = NATURAL_FREQUENCY * NATURAL_FREQUENCY * (xGoal - x) -
-    // 2 * NATURAL_FREQUENCY * this[$velocity];
-    const deltaX = (x - xGoal);
-    const intermediateVelocity = this[$velocity] + NATURAL_FREQUENCY * deltaX;
-    const intermediateX = deltaX + timeStepMilliseconds * intermediateVelocity;
-    const decay = Math.exp(-NATURAL_FREQUENCY * timeStepMilliseconds);
-    const newVelocity =
-        (intermediateVelocity - NATURAL_FREQUENCY * intermediateX) * decay;
-    const acceleration =
-        -NATURAL_FREQUENCY * (newVelocity + intermediateVelocity * decay);
-    if (Math.abs(newVelocity) < NIL_SPEED * xNormalization &&
-        acceleration * deltaX >= 0) {
-      // This ensures the controls settle and stop calling this function instead
-      // of asymptotically approaching their goal.
-      this[$velocity] = 0;
-      return xGoal;
-    } else {
-      this[$velocity] = newVelocity;
-      return xGoal + intermediateX * decay;
-    }
-  }
+export interface PointerChangeEvent extends ThreeEvent {
+  type: 'pointer-change-start'|'pointer-change-end';
+  pointer: Pointer;
 }
 
 /**
@@ -220,6 +169,7 @@ export class SmoothControls extends EventDispatcher {
 
   private[$options]: SmoothControlsOptions;
   private[$isUserChange] = false;
+  private[$isUserPointing] = false;
 
   private[$spherical] = new Spherical();
   private[$goalSpherical] = new Spherical();
@@ -229,11 +179,6 @@ export class SmoothControls extends EventDispatcher {
   private[$logFov]: number;
   private[$goalLogFov]: number;
   private[$fovDamper] = new Damper();
-  private[$target] = new Vector3();
-  private[$goalTarget] = new Vector3();
-  private[$targetDamperX] = new Damper();
-  private[$targetDamperY] = new Damper();
-  private[$targetDamperZ] = new Damper();
 
   private[$pointerIsDown] = false;
   private[$lastPointerPosition]: Pointer = {
@@ -357,9 +302,6 @@ export class SmoothControls extends EventDispatcher {
     // polar, azimuth and radius:
     this.setOrbit();
     this.setFieldOfView(Math.exp(this[$goalLogFov]));
-    // Prevent interpolation in the case that any target spherical values
-    // changed (preserving OrbitalControls behavior):
-    this.jumpToGoal();
   }
 
   /**
@@ -445,39 +387,44 @@ export class SmoothControls extends EventDispatcher {
   }
 
   /**
-   * Sets the target the camera is pointing toward
-   */
-  setTarget(x: number, y: number, z: number) {
-    this[$goalTarget].set(x, y, z);
-  }
-
-  /**
-   * Returns a copy of the target position the camera is pointed toward
-   */
-  getTarget(): Vector3 {
-    return this[$target].clone();
-  }
-
-  /**
    * Adjust the orbital position of the camera relative to its current orbital
    * position. Does not let the theta goal get more than pi ahead of the current
    * theta, which ensures interpolation continues in the direction of the delta.
+   * The deltaZoom parameter adjusts both the field of view and the orbit radius
+   * such that they progress across their allowed ranges in sync.
    */
-  adjustOrbit(
-      deltaTheta: number, deltaPhi: number, deltaRadius: number,
-      deltaFov: number): boolean {
+  adjustOrbit(deltaTheta: number, deltaPhi: number, deltaZoom: number):
+      boolean {
     const {theta, phi, radius} = this[$goalSpherical];
+    const {
+      minimumRadius,
+      maximumRadius,
+      minimumFieldOfView,
+      maximumFieldOfView
+    } = this[$options];
 
     const dTheta = this[$spherical].theta - theta;
     const dThetaLimit = Math.PI - 0.001;
     const goalTheta =
         theta - clamp(deltaTheta, -dThetaLimit - dTheta, dThetaLimit - dTheta);
     const goalPhi = phi - deltaPhi;
-    const goalRadius = radius + deltaRadius;
+
+    const deltaRatio = deltaZoom === 0 ?
+        0 :
+        deltaZoom > 0 ? (maximumRadius! - radius) /
+                (Math.log(maximumFieldOfView!) - this[$goalLogFov]) :
+                        (radius - minimumRadius!) /
+                (this[$goalLogFov] - Math.log(minimumFieldOfView!));
+
+    const goalRadius = radius +
+        deltaZoom *
+            Math.min(
+                isFinite(deltaRatio) ? deltaRatio : Infinity,
+                maximumRadius! - minimumRadius!);
     let handled = this.setOrbit(goalTheta, goalPhi, goalRadius);
 
-    if (deltaFov !== 0) {
-      const goalLogFov = this[$goalLogFov] + deltaFov;
+    if (deltaZoom !== 0) {
+      const goalLogFov = this[$goalLogFov] + deltaZoom;
       this.setFieldOfView(Math.exp(goalLogFov));
       handled = true;
     }
@@ -490,7 +437,7 @@ export class SmoothControls extends EventDispatcher {
    * parameters.
    */
   jumpToGoal() {
-    this.update(0, 100 * DECAY_MILLISECONDS);
+    this.update(0, SETTLING_TIME);
   }
 
   /**
@@ -504,8 +451,7 @@ export class SmoothControls extends EventDispatcher {
     if (this[$isStationary]()) {
       return;
     }
-    const {maximumPolarAngle, maximumRadius, maximumFieldOfView} =
-        this[$options];
+    const {maximumPolarAngle, maximumRadius} = this[$options];
 
     const dTheta = this[$spherical].theta - this[$goalSpherical].theta;
     if (Math.abs(dTheta) > Math.PI &&
@@ -529,15 +475,8 @@ export class SmoothControls extends EventDispatcher {
         delta,
         maximumRadius!);
 
-    this[$logFov] = this[$fovDamper].update(
-        this[$logFov], this[$goalLogFov], delta, maximumFieldOfView!);
-
-    this[$target].x = this[$targetDamperX].update(
-        this[$target].x, this[$goalTarget].x, delta, maximumRadius!);
-    this[$target].y = this[$targetDamperY].update(
-        this[$target].y, this[$goalTarget].y, delta, maximumRadius!);
-    this[$target].z = this[$targetDamperZ].update(
-        this[$target].z, this[$goalTarget].z, delta, maximumRadius!);
+    this[$logFov] =
+        this[$fovDamper].update(this[$logFov], this[$goalLogFov], delta, 1);
 
     this[$moveCamera]();
   }
@@ -546,15 +485,13 @@ export class SmoothControls extends EventDispatcher {
     return this[$goalSpherical].theta === this[$spherical].theta &&
         this[$goalSpherical].phi === this[$spherical].phi &&
         this[$goalSpherical].radius === this[$spherical].radius &&
-        this[$goalLogFov] === this[$logFov] &&
-        this[$goalTarget].equals(this[$target]);
+        this[$goalLogFov] === this[$logFov];
   }
 
   private[$moveCamera]() {
     // Derive the new camera position from the updated spherical:
     this[$spherical].makeSafe();
     this.camera.position.setFromSpherical(this[$spherical]);
-    this.camera.position.add(this[$target]);
     this.camera.setRotationFromEuler(new Euler(
         this[$spherical].phi - Math.PI / 2, this[$spherical].theta, 0, 'YXZ'));
 
@@ -579,10 +516,8 @@ export class SmoothControls extends EventDispatcher {
   }
 
   private[$userAdjustOrbit](
-      deltaTheta: number, deltaPhi: number, deltaRadius: number,
-      deltaFov: number): boolean {
-    const handled =
-        this.adjustOrbit(deltaTheta, deltaPhi, deltaRadius, deltaFov);
+      deltaTheta: number, deltaPhi: number, deltaZoom: number): boolean {
+    const handled = this.adjustOrbit(deltaTheta, deltaPhi, deltaZoom);
 
     this[$isUserChange] = true;
     // Always make sure that an initial event is triggered in case there is
@@ -633,10 +568,10 @@ export class SmoothControls extends EventDispatcher {
                 this[$lastTouches][0], this[$lastTouches][1]);
             const touchDistance =
                 this[$twoTouchDistance](touches[0], touches[1]);
-            const deltaFov = -1 * ZOOM_SENSITIVITY *
-                (touchDistance - lastTouchDistance) / 10.0;
+            const deltaZoom =
+                ZOOM_SENSITIVITY * (lastTouchDistance - touchDistance) / 10.0;
 
-            handled = this[$userAdjustOrbit](0, 0, 0, deltaFov);
+            handled = this[$userAdjustOrbit](0, 0, deltaZoom);
           }
 
           break;
@@ -666,11 +601,17 @@ export class SmoothControls extends EventDispatcher {
     this[$lastPointerPosition].clientX = clientX;
     this[$lastPointerPosition].clientY = clientY;
 
-    return this[$userAdjustOrbit](deltaTheta, deltaPhi, 0, 0);
+    if (this[$isUserPointing] === false) {
+      this[$isUserPointing] = true;
+      this.dispatchEvent({type: 'pointer-change-start', pointer: {...pointer}});
+    }
+
+    return this[$userAdjustOrbit](deltaTheta, deltaPhi, 0);
   }
 
   private[$handlePointerDown](event: MouseEvent|TouchEvent) {
     this[$pointerIsDown] = true;
+    this[$isUserPointing] = false;
 
     if (TOUCH_EVENT_RE.test(event.type)) {
       const {touches} = event as TouchEvent;
@@ -701,6 +642,13 @@ export class SmoothControls extends EventDispatcher {
   private[$handlePointerUp](_event: MouseEvent|TouchEvent) {
     this.element.style.cursor = 'grab';
     this[$pointerIsDown] = false;
+
+    if (this[$isUserPointing]) {
+      this.dispatchEvent({
+        type: 'pointer-change-end',
+        pointer: {...this[$lastPointerPosition]}
+      });
+    }
   }
 
   private[$handleWheel](event: Event) {
@@ -708,9 +656,10 @@ export class SmoothControls extends EventDispatcher {
       return;
     }
 
-    const deltaFov = (event as WheelEvent).deltaY * ZOOM_SENSITIVITY / 30;
+    const deltaZoom = (event as WheelEvent).deltaY *
+        ((event as WheelEvent).deltaMode == 1 ? 18 : 1) * ZOOM_SENSITIVITY / 30;
 
-    if ((this[$userAdjustOrbit](0, 0, 0, deltaFov) ||
+    if ((this[$userAdjustOrbit](0, 0, deltaZoom) ||
          this[$options].eventHandlingBehavior === 'prevent-all') &&
         event.cancelable) {
       event.preventDefault();
@@ -727,27 +676,27 @@ export class SmoothControls extends EventDispatcher {
     switch (event.keyCode) {
       case KeyCode.PAGE_UP:
         relevantKey = true;
-        handled = this[$userAdjustOrbit](0, 0, 0, ZOOM_SENSITIVITY);
+        handled = this[$userAdjustOrbit](0, 0, ZOOM_SENSITIVITY);
         break;
       case KeyCode.PAGE_DOWN:
         relevantKey = true;
-        handled = this[$userAdjustOrbit](0, 0, 0, -1 * ZOOM_SENSITIVITY);
+        handled = this[$userAdjustOrbit](0, 0, -1 * ZOOM_SENSITIVITY);
         break;
       case KeyCode.UP:
         relevantKey = true;
-        handled = this[$userAdjustOrbit](0, -KEYBOARD_ORBIT_INCREMENT, 0, 0);
+        handled = this[$userAdjustOrbit](0, -KEYBOARD_ORBIT_INCREMENT, 0);
         break;
       case KeyCode.DOWN:
         relevantKey = true;
-        handled = this[$userAdjustOrbit](0, KEYBOARD_ORBIT_INCREMENT, 0, 0);
+        handled = this[$userAdjustOrbit](0, KEYBOARD_ORBIT_INCREMENT, 0);
         break;
       case KeyCode.LEFT:
         relevantKey = true;
-        handled = this[$userAdjustOrbit](-KEYBOARD_ORBIT_INCREMENT, 0, 0, 0);
+        handled = this[$userAdjustOrbit](-KEYBOARD_ORBIT_INCREMENT, 0, 0);
         break;
       case KeyCode.RIGHT:
         relevantKey = true;
-        handled = this[$userAdjustOrbit](KEYBOARD_ORBIT_INCREMENT, 0, 0, 0);
+        handled = this[$userAdjustOrbit](KEYBOARD_ORBIT_INCREMENT, 0, 0);
         break;
     }
 

@@ -16,6 +16,8 @@
 const resolve = require('rollup-plugin-node-resolve');
 const replace = require('rollup-plugin-replace');
 const cleanup = require('rollup-plugin-cleanup');
+const {terser} = require('rollup-plugin-terser');
+
 const {NODE_ENV} = process.env;
 
 const onwarn = (warning, warn) => {
@@ -25,7 +27,9 @@ const onwarn = (warning, warn) => {
   }
 };
 
-const plugins = [resolve(), replace({'Reflect.decorate': 'undefined'})];
+let plugins = [resolve(), replace({'Reflect.decorate': 'undefined'})];
+
+const watchFiles = ['lib/**', '../3dom/lib/**'];
 
 const outputOptions = [{
   input: './lib/model-viewer.js',
@@ -36,20 +40,25 @@ const outputOptions = [{
     name: 'ModelViewerElement'
   },
   watch: {
-    include: 'lib/**',
+    include: watchFiles,
   },
   plugins,
   onwarn,
 }];
 
 if (NODE_ENV !== 'development') {
-  plugins.unshift(cleanup({
-    // Ideally we'd also clean third_party/three, which saves
-    // ~45kb in filesize alone... but takes 2 minutes to build
-    include: ['lib/**'],
-    comments: 'none',
-  }));
+  const pluginsIE11 = [
+    ...plugins,
+    cleanup({
+      // Ideally we'd also clean third_party/three, which saves
+      // ~45kb in filesize alone... but takes 2 minutes to build
+      include: ['lib/**'],
+      comments: 'none',
+    })
+  ];
 
+  // IE11 does not support modules, so they are removed here, as well as in a
+  // dedicated unit test build which is needed for the same reason.
   outputOptions.push(
       {
         input: './lib/model-viewer.js',
@@ -60,22 +69,9 @@ if (NODE_ENV !== 'development') {
           name: 'ModelViewerElement'
         },
         watch: {
-          include: 'lib/**',
+          include: watchFiles,
         },
-        plugins,
-        onwarn,
-      },
-      {
-        input: './lib/test/index.js',
-        output: {
-          file: './dist/unit-tests.js',
-          format: 'esm',
-          name: 'ModelViewerElementUnitTests'
-        },
-        watch: {
-          include: 'lib/**',
-        },
-        plugins,
+        plugins: pluginsIE11,
         onwarn,
       },
       {
@@ -86,7 +82,34 @@ if (NODE_ENV !== 'development') {
           name: 'ModelViewerElementUnitTests'
         },
         watch: {
-          include: 'lib/**',
+          include: watchFiles,
+        },
+        plugins: pluginsIE11,
+        onwarn,
+      },
+  );
+
+  plugins = [
+    ...plugins,
+    terser({
+      sourcemap: {
+        includeSources: true,
+        filename: 'model-viewer.min.js.map',
+      }
+    }),
+  ];
+
+  outputOptions.push(
+      {
+        input: './dist/model-viewer.js',
+        output: {
+          file: './dist/model-viewer.min.js',
+          sourcemap: true,
+          format: 'esm',
+          name: 'ModelViewerElement'
+        },
+        watch: {
+          include: watchFiles,
         },
         plugins,
         onwarn,

@@ -14,11 +14,13 @@
  */
 
 import {property} from 'lit-element';
+import {Event as ThreeEvent} from 'three';
 
-import {IS_ANDROID, IS_AR_QUICKLOOK_CANDIDATE, IS_IOS, IS_IOS_CHROME, IS_IOS_SAFARI, IS_WEBXR_AR_CANDIDATE} from '../constants.js';
-import ModelViewerElementBase, {$container, $renderer, $scene} from '../model-viewer-base.js';
+import {IS_ANDROID, IS_AR_QUICKLOOK_CANDIDATE, IS_IOS_CHROME, IS_IOS_SAFARI, IS_WEBXR_AR_CANDIDATE} from '../constants.js';
+import ModelViewerElementBase, {$renderer, $scene} from '../model-viewer-base.js';
 import {enumerationDeserializer} from '../styles/deserializers.js';
-import {Constructor, deserializeUrl} from '../utilities.js';
+import {ARStatus} from '../three-components/ARRenderer.js';
+import {Constructor} from '../utilities.js';
 
 /**
  * Takes a URL to a USDZ file and sets the appropriate fields so that Safari
@@ -29,8 +31,12 @@ export const openIOSARQuickLook = (() => {
   anchor.setAttribute('rel', 'ar');
   anchor.appendChild(document.createElement('img'));
 
-  return (usdzSrc: string) => {
-    anchor.setAttribute('href', usdzSrc);
+  return (usdzSrc: string, arScale: string) => {
+    const modelUrl = new URL(usdzSrc, self.location.toString());
+    if (arScale === 'fixed') {
+      modelUrl.hash = 'allowsContentScaling=0';
+    }
+    anchor.setAttribute('href', modelUrl.toString());
     anchor.click();
   };
 })();
@@ -41,7 +47,6 @@ export const openIOSARQuickLook = (() => {
  */
 export const openSceneViewer = (() => {
   const anchor = document.createElement('a');
-  const linkOrTitle = /(link|title)(=|&)|(\?|&)(link|title)$/;
   const noArViewerSigil = '#model-viewer-no-ar-fallback';
   let fallbackInvoked = false;
 
@@ -53,33 +58,21 @@ export const openSceneViewer = (() => {
 
     const location = self.location.toString();
     const locationUrl = new URL(location);
-    const modelUrl = new URL(gltfSrc);
-    const link = encodeURIComponent(location);
+    const modelUrl = new URL(gltfSrc, location);
     const scheme = modelUrl.protocol.replace(':', '');
-
-    if (modelUrl.search && modelUrl.search.match(linkOrTitle)) {
-      console.warn(`The model URL (${
-          modelUrl
-              .toString()}) contains a "link" and/or "title" query parameter.
- These parameters are used to configure Scene Viewer and will be duplicated in the URL.
- You should choose different query parameter names if possible!`);
-    }
 
     locationUrl.hash = noArViewerSigil;
 
-    title = encodeURIComponent(title);
-    modelUrl.protocol = 'intent://';
-
-    // It's possible for a model URL to have meaningful query parameters
-    // already. Sure hope they aren't called 'link' or 'title' though 😅
-    modelUrl.search +=
-        (modelUrl.search ? '&' : '') + `link=${link}&title=${title}`;
+    let intentParams =
+        `?file=${encodeURIComponent(modelUrl.toString())}&mode=ar_only&link=${
+            location}&title=${encodeURIComponent(title)}`;
 
     if (arScale === 'fixed') {
-      modelUrl.search += `&resizable=false`;
+      intentParams += `&resizable=false`;
     }
 
-    const intent = `${modelUrl.toString()}#Intent;scheme=${
+    const intent = `intent://arvr.google.com/scene-viewer/1.0${
+        intentParams}#Intent;scheme=${
         scheme};package=com.google.ar.core;action=android.intent.action.VIEW;S.browser_fallback_url=${
         encodeURIComponent(locationUrl.toString())};end;`;
 
@@ -107,42 +100,39 @@ export type QuickLookBrowser = 'safari'|'chrome';
 const deserializeQuickLookBrowsers =
     enumerationDeserializer<QuickLookBrowser>(['safari', 'chrome']);
 
-export type ARMode = 'quick-look'|'ar-viewer'|'unstable-webxr'|'none';
+export type ARMode = 'quick-look'|'scene-viewer'|'webxr'|'none';
+
+const deserializeARModes = enumerationDeserializer<ARMode>(
+    ['quick-look', 'scene-viewer', 'webxr', 'none']);
+
+const DEFAULT_AR_MODES = 'webxr scene-viewer quick-look';
 
 const ARMode: {[index: string]: ARMode} = {
   QUICK_LOOK: 'quick-look',
-  AR_VIEWER: 'ar-viewer',
-  UNSTABLE_WEBXR: 'unstable-webxr',
+  SCENE_VIEWER: 'scene-viewer',
+  WEBXR: 'webxr',
   NONE: 'none'
 };
 
-const $exitFullscreenButtonContainer = Symbol('exitFullscreenButtonContainer');
+export interface ARStatusDetails {
+  status: ARStatus;
+}
+
 const $arButtonContainer = Symbol('arButtonContainer');
-const $defaultExitFullscreenButton = Symbol('defaultExitFullscreenButton');
 const $enterARWithWebXR = Symbol('enterARWithWebXR');
 const $canActivateAR = Symbol('canActivateAR');
 const $arMode = Symbol('arMode');
+const $arModes = Symbol('arModes');
 const $canLaunchQuickLook = Symbol('canLaunchQuickLook');
 const $quickLookBrowsers = Symbol('quickLookBrowsers');
 
-const $arButtonContainerFallbackClickHandler =
-    Symbol('arButtonContainerFallbackClickHandler');
-const $onARButtonContainerFallbackClick =
-    Symbol('onARButtonContainerFallbackClick');
-const $arButtonContainerClickHandler = Symbol('arButtonContainerClickHandler');
 const $onARButtonContainerClick = Symbol('onARButtonContainerClick');
-
-const $exitFullscreenButtonContainerClickHandler =
-    Symbol('exitFullscreenButtonContainerClickHandler');
-const $onExitFullscreenButtonClick = Symbol('onExitFullscreenButtonClick');
-
-const $fullscreenchangeHandler = Symbol('fullscreenHandler');
-const $onFullscreenchange = Symbol('onFullscreen');
+const $onARStatus = Symbol('onARStatus');
 
 export declare interface ARInterface {
   ar: boolean;
+  arModes: string;
   arScale: string;
-  unstableWebxr: boolean;
   iosSrc: string|null;
   quickLookBrowsers: string;
   readonly canActivateAR: boolean;
@@ -154,15 +144,12 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
   class ARModelViewerElement extends ModelViewerElement {
     @property({type: Boolean, attribute: 'ar'}) ar: boolean = false;
 
-    @property({type: String, attribute: 'ar-scale'}) arScale: string =
-      'auto';
+    @property({type: String, attribute: 'ar-scale'}) arScale: string = 'auto';
 
-    @property({type: Boolean, attribute: 'unstable-webxr'})
-    unstableWebxr: boolean = false;
+    @property({type: String, attribute: 'ar-modes'})
+    arModes: string = DEFAULT_AR_MODES;
 
-    @property(
-        {converter: {fromAttribute: deserializeUrl}, attribute: 'ios-src'})
-    iosSrc: string|null = null;
+    @property({type: String, attribute: 'ios-src'}) iosSrc: string|null = null;
 
     @property({type: String, attribute: 'quick-look-browsers'})
     quickLookBrowsers: string = 'safari';
@@ -178,35 +165,24 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
     protected[$arButtonContainer]: HTMLElement =
         this.shadowRoot!.querySelector('.ar-button') as HTMLElement;
 
-    protected[$exitFullscreenButtonContainer]: HTMLElement =
-        this.shadowRoot!.querySelector('.slot.exit-fullscreen-button') as
-        HTMLElement;
-    protected[$defaultExitFullscreenButton]: HTMLElement =
-        this.shadowRoot!.querySelector('#default-exit-fullscreen-button') as
-        HTMLElement;
-
-    // NOTE(cdata): We use a second, separate "fallback" click handler in
-    // order to work around a regression in how Chrome on Android behaves
-    // when requesting fullscreen at the same time as triggering an intent.
-    // As of m76, intents could no longer be triggered successfully if they
-    // were dispatched in the same handler as the fullscreen request. The
-    // workaround is to split both effects into their own event handlers.
-    // @see https://github.com/GoogleWebComponents/model-viewer/issues/693
-    protected[$arButtonContainerFallbackClickHandler] = (event: Event) =>
-        this[$onARButtonContainerFallbackClick](event);
-
-    protected[$arButtonContainerClickHandler]: (event: Event) => void =
-        (event) => this[$onARButtonContainerClick](event);
-
-    protected[$exitFullscreenButtonContainerClickHandler]:
-        () => void = () => this[$onExitFullscreenButtonClick]();
-
-    protected[$fullscreenchangeHandler]:
-        () => void = () => this[$onFullscreenchange]();
-
+    protected[$arModes]: Set<ARMode> = new Set();
     protected[$arMode]: ARMode = ARMode.NONE;
 
     protected[$quickLookBrowsers]: Set<QuickLookBrowser> = new Set();
+
+    private[$onARButtonContainerClick] = (event: Event) => {
+      event.preventDefault();
+      this.activateAR();
+    };
+
+    private[$onARStatus] = ({status}: ThreeEvent) => {
+      if (status === ARStatus.NOT_PRESENTING ||
+          this[$renderer].arRenderer.presentedScene === this[$scene]) {
+        this.setAttribute('ar-status', status);
+        this.dispatchEvent(
+            new CustomEvent<ARStatusDetails>('ar-status', {detail: {status}}));
+      }
+    };
 
     /**
      * Activates AR. Note that for any mode that is not WebXR-based, this
@@ -217,12 +193,12 @@ export const ARMixin = <T extends Constructor<ModelViewerElementBase>>(
     async activateAR() {
       switch (this[$arMode]) {
         case ARMode.QUICK_LOOK:
-          openIOSARQuickLook(this.iosSrc!);
+          openIOSARQuickLook(this.iosSrc!, this.arScale);
           break;
-        case ARMode.UNSTABLE_WEBXR:
+        case ARMode.WEBXR:
           await this[$enterARWithWebXR]();
           break;
-        case ARMode.AR_VIEWER:
+        case ARMode.SCENE_VIEWER:
           openSceneViewer(this.src!, this.alt || '', this.arScale);
           break;
         default:
@@ -233,54 +209,30 @@ configuration or device capabilities');
       }
     }
 
-    connectedCallback() {
-      super.connectedCallback();
-      document.addEventListener(
-          'fullscreenchange', this[$fullscreenchangeHandler]);
-    }
-
-    disconnectedCallback() {
-      super.disconnectedCallback();
-      document.removeEventListener(
-          'fullscreenchange', this[$fullscreenchangeHandler]);
-    }
-
-    [$onExitFullscreenButtonClick]() {
-      if (document.fullscreenElement === this) {
-        document.exitFullscreen();
-      }
-    }
-
-    [$onFullscreenchange]() {
-      const scene = this[$scene];
-      const isFullscreen = document.fullscreenElement === this;
-
-      if (isFullscreen) {
-        this[$container].classList.add('fullscreen');
-      } else {
-        this[$container].classList.remove('fullscreen');
-      }
-
-      if (document.fullscreenElement !== this &&
-          this[$renderer].presentedScene === scene) {
-        try {
-          this[$renderer].stopPresenting();
-        } catch (error) {
-          console.warn('Unexpected error while stopping AR presentation');
-          console.error(error);
-        }
-      }
-    }
-
     protected async[$enterARWithWebXR]() {
       console.log('Attempting to present in AR...');
 
       try {
-        await this[$renderer].present(this[$scene]);
+        await this[$renderer].arRenderer.present(this[$scene]);
       } catch (error) {
         console.warn('Error while trying to present to AR');
         console.error(error);
+        await this[$renderer].arRenderer.stopPresenting();
       }
+    }
+
+    connectedCallback() {
+      super.connectedCallback();
+
+      this[$renderer].arRenderer.addEventListener('status', this[$onARStatus]);
+      this.setAttribute('ar-status', ARStatus.NOT_PRESENTING);
+    }
+
+    disconnectedCallback() {
+      super.disconnectedCallback();
+
+      this[$renderer].arRenderer.removeEventListener(
+          'status', this[$onARStatus]);
     }
 
     async update(changedProperties: Map<string, any>) {
@@ -291,64 +243,52 @@ configuration or device capabilities');
             deserializeQuickLookBrowsers(this.quickLookBrowsers);
       }
 
-      if (!changedProperties.has('unstableWebxr') &&
-          !changedProperties.has('iosSrc') && !changedProperties.has('ar') &&
-          !changedProperties.has('src') && !changedProperties.has('alt')) {
+      if (!changedProperties.has('ar') && !changedProperties.has('arModes') &&
+          !changedProperties.has('iosSrc')) {
         return;
       }
 
-      const unstableWebxrCandidate = this.unstableWebxr &&
-          IS_WEBXR_AR_CANDIDATE && await this[$renderer].supportsPresentation();
-      const arViewerCandidate = IS_ANDROID && this.ar;
-      const iosQuickLookCandidate = IS_IOS && IS_AR_QUICKLOOK_CANDIDATE &&
-          this[$canLaunchQuickLook] && !!this.iosSrc;
-
-      const showArButton =
-          unstableWebxrCandidate || arViewerCandidate || iosQuickLookCandidate;
-
-      if (unstableWebxrCandidate) {
-        this[$arMode] = ARMode.UNSTABLE_WEBXR;
-      } else if (arViewerCandidate) {
-        this[$arMode] = ARMode.AR_VIEWER;
-      } else if (iosQuickLookCandidate) {
-        this[$arMode] = ARMode.QUICK_LOOK;
-      } else {
-        this[$arMode] = ARMode.NONE;
+      if (changedProperties.has('arModes')) {
+        this[$arModes] = deserializeARModes(this.arModes);
       }
 
-      if (showArButton) {
+      if (changedProperties.has('arScale')) {
+        this[$scene].canScale = this.arScale !== 'fixed';
+      }
+
+      this[$arMode] = ARMode.NONE;
+      if (this.ar) {
+        const arModes: ARMode[] = [];
+        this[$arModes].forEach((value) => {
+          arModes.push(value);
+        });
+
+        for (const value of arModes) {
+          if (value === 'webxr' && IS_WEBXR_AR_CANDIDATE &&
+              await this[$renderer].arRenderer.supportsPresentation()) {
+            this[$arMode] = ARMode.WEBXR;
+            break;
+          } else if (value === 'scene-viewer' && IS_ANDROID) {
+            this[$arMode] = ARMode.SCENE_VIEWER;
+            break;
+          } else if (
+              value === 'quick-look' && !!this.iosSrc &&
+              this[$canLaunchQuickLook] && IS_AR_QUICKLOOK_CANDIDATE) {
+            this[$arMode] = ARMode.QUICK_LOOK;
+            break;
+          }
+        }
+      }
+
+      if (this.canActivateAR) {
         this[$arButtonContainer].classList.add('enabled');
-        // NOTE(cdata): The order of the two click handlers on the "ar
-        // button container" is important, vital to the workaround described
-        // earlier in this file. Reversing their order will cause our Scene
-        // Viewer integration to break.
-        // @see https://github.com/GoogleWebComponents/model-viewer/issues/693
         this[$arButtonContainer].addEventListener(
-            'click', this[$arButtonContainerClickHandler]);
-        this[$arButtonContainer].addEventListener(
-            'click', this[$arButtonContainerFallbackClickHandler]);
-        this[$exitFullscreenButtonContainer].addEventListener(
-            'click', this[$exitFullscreenButtonContainerClickHandler]);
+            'click', this[$onARButtonContainerClick]);
       } else {
         this[$arButtonContainer].removeEventListener(
-            'click', this[$arButtonContainerClickHandler]);
-        this[$arButtonContainer].removeEventListener(
-            'click', this[$arButtonContainerFallbackClickHandler]);
-        this[$exitFullscreenButtonContainer].removeEventListener(
-            'click', this[$exitFullscreenButtonContainerClickHandler]);
+            'click', this[$onARButtonContainerClick]);
         this[$arButtonContainer].classList.remove('enabled');
       }
-    }
-
-    [$onARButtonContainerFallbackClick](_event: Event) {
-      if (this[$arMode] === ARMode.AR_VIEWER) {
-        this.requestFullscreen();
-      }
-    }
-
-    [$onARButtonContainerClick](event: Event) {
-      event.preventDefault();
-      this.activateAR();
     }
 
     get[$canLaunchQuickLook](): boolean {

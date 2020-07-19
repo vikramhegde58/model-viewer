@@ -13,17 +13,22 @@
  * limitations under the License.
  */
 
-import {BackSide, DoubleSide, FrontSide, Mesh, MeshStandardMaterial, Object3D, Scene} from 'three';
+import {Event as ThreeEvent, EventDispatcher} from 'three';
 import {DRACOLoader} from 'three/examples/jsm/loaders/DRACOLoader.js';
 import {GLTF, GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js';
-import {RoughnessMipmapper} from 'three/examples/jsm/utils/RoughnessMipmapper.js';
 
+import ModelViewerElementBase from '../model-viewer-base.js';
 import {CacheEvictionPolicy} from '../utilities/cache-eviction-policy.js';
 
-import {cloneGltf} from './ModelUtils.js';
-import {Renderer} from './Renderer.js';
+import {GLTFInstance, GLTFInstanceConstructor} from './GLTFInstance.js';
 
 export type ProgressCallback = (progress: number) => void;
+
+export interface PreloadEvent extends ThreeEvent {
+  type: 'preload';
+  element: ModelViewerElementBase;
+  src: String;
+}
 
 /**
  * A helper to Promise-ify a Three.js GLTFLoader
@@ -33,28 +38,28 @@ export const loadWithLoader =
      loader: GLTFLoader,
      progressCallback: ProgressCallback = () => {}) => {
       const onProgress = (event: ProgressEvent) => {
-        progressCallback!(event.loaded / event.total);
+        const fraction = event.loaded / event.total;
+        progressCallback!
+            (Math.max(0, Math.min(1, isFinite(fraction) ? fraction : 1)));
       };
       return new Promise<GLTF>((resolve, reject) => {
         loader.load(url, resolve, onProgress, reject);
       });
     };
 
-export const $releaseFromCache = Symbol('releaseFromCache');
-export interface CacheRetainedScene extends Scene {
-  [$releaseFromCache]: () => void;
-}
-
-const cache = new Map<string, Promise<GLTF>>();
+const cache = new Map<string, Promise<GLTFInstance>>();
 const preloaded = new Map<string, boolean>();
-
-export const $evictionPolicy = Symbol('evictionPolicy');
 
 let dracoDecoderLocation: string;
 const dracoLoader = new DRACOLoader();
-export const $loader = Symbol('loader');
 
-export class CachingGLTFLoader {
+export const $loader = Symbol('loader');
+export const $evictionPolicy = Symbol('evictionPolicy');
+const $GLTFInstance = Symbol('GLTFInstance');
+
+export class CachingGLTFLoader<T extends GLTFInstanceConstructor =
+                                             GLTFInstanceConstructor> extends
+    EventDispatcher {
   static setDRACODecoderLocation(url: string) {
     dracoDecoderLocation = url;
     dracoLoader.setDecoderPath(url);
@@ -95,20 +100,8 @@ export class CachingGLTFLoader {
 
     const gltf = await gltfLoads;
     // Dispose of the cached glTF's materials and geometries:
-    gltf!.scenes.forEach(scene => {
-      scene.traverse(object3D => {
-        if (!(object3D as Mesh).isMesh) {
-          return;
-        }
-        const mesh = object3D as Mesh;
-        const materials =
-            Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        materials.forEach(material => {
-          material.dispose();
-        });
-        mesh.geometry.dispose();
-      });
-    });
+
+    gltf!.dispose();
   }
 
   /**
@@ -119,11 +112,14 @@ export class CachingGLTFLoader {
     return !!preloaded.get(url);
   }
 
-  constructor() {
+  constructor(GLTFInstance: T) {
+    super();
+    this[$GLTFInstance] = GLTFInstance;
     this[$loader].setDRACOLoader(dracoLoader);
   }
 
   protected[$loader]: GLTFLoader = new GLTFLoader();
+  protected[$GLTFInstance]: T;
 
   protected get[$evictionPolicy](): CacheEvictionPolicy {
     return (this.constructor as typeof CachingGLTFLoader)[$evictionPolicy];
@@ -133,135 +129,71 @@ export class CachingGLTFLoader {
    * Preloads a glTF, populating the cache. Returns a promise that resolves
    * when the cache is populated.
    */
-  async preload(url: string, progressCallback: ProgressCallback = () => {}) {
+  async preload(
+      url: string, element: ModelViewerElementBase,
+      progressCallback: ProgressCallback = () => {}) {
+    this.dispatchEvent(
+        {type: 'preload', element: element, src: url} as PreloadEvent);
     if (!cache.has(url)) {
-      cache.set(url, loadWithLoader(url, this[$loader], (progress: number) => {
-                  progressCallback(progress * 0.9);
-                }));
+      const rawGLTFLoads =
+          loadWithLoader(url, this[$loader], (progress: number) => {
+            progressCallback(progress * 0.8);
+          });
+
+      const GLTFInstance = this[$GLTFInstance];
+      const gltfInstanceLoads = rawGLTFLoads
+                                    .then((rawGLTF) => {
+                                      return GLTFInstance.prepare(rawGLTF);
+                                    })
+                                    .then((preparedGLTF) => {
+                                      progressCallback(0.9);
+                                      return new GLTFInstance(preparedGLTF);
+                                    });
+
+      cache.set(url, gltfInstanceLoads);
     }
 
     await cache.get(url);
 
+    preloaded.set(url, true);
+
     if (progressCallback) {
       progressCallback(1.0);
     }
-
-    preloaded.set(url, true);
   }
-
-  protected roughnessMipmapper =
-      new RoughnessMipmapper(Renderer.singleton.threeRenderer);
 
   /**
    * Loads a glTF from the specified url and resolves a unique clone of the
    * glTF. If the glTF has already been loaded, makes a clone of the cached
    * copy.
    */
-  async load(url: string, progressCallback: ProgressCallback = () => {}):
-      Promise<CacheRetainedScene|null> {
-    await this.preload(url, progressCallback);
+  async load(
+      url: string, element: ModelViewerElementBase,
+      progressCallback: ProgressCallback = () => {}): Promise<InstanceType<T>> {
+    await this.preload(url, element, progressCallback);
 
     const gltf = await cache.get(url)!;
+    const clone = await gltf.clone() as InstanceType<T>;
 
-    const meshesToDuplicate: Mesh[] = [];
-    if (gltf.scene != null) {
-      gltf.scene.traverse((node: Object3D) => {
-        // Three.js seems to cull some animated models incorrectly. Since we
-        // expect to view our whole scene anyway, we turn off the frustum
-        // culling optimization here.
-        node.frustumCulled = false;
-        // Animations for objects without names target their UUID instead. When
-        // objects are cloned, they get new UUIDs which the animation can't
-        // find. To fix this, we assign their UUID as their name.
-        if (!node.name) {
-          node.name = node.uuid;
-        }
-        if (!(node as Mesh).isMesh) {
+    this[$evictionPolicy].retain(url);
+
+    // Patch dispose so that we can properly account for instance use
+    // in the caching layer:
+    clone.dispose = (() => {
+      const originalDispose = clone.dispose;
+      let disposed = false;
+
+      return () => {
+        if (disposed) {
           return;
         }
-        node.castShadow = true;
-        const mesh = node as Mesh;
-        let transparent = false;
-        const materials =
-            Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        materials.forEach(material => {
-          if ((material as any).isMeshStandardMaterial) {
-            if (material.transparent && material.side === DoubleSide) {
-              transparent = true;
-              material.side = FrontSide;
-            }
-            this.roughnessMipmapper.generateMipmaps(
-                material as MeshStandardMaterial);
-          }
-        });
 
-        if (transparent) {
-          meshesToDuplicate.push(mesh);
-        }
-      });
-    }
+        disposed = true;
+        originalDispose.apply(clone);
+        this[$evictionPolicy].release(url);
+      };
+    })();
 
-    // We duplicate transparent, double-sided meshes and render the back face
-    // before the front face. This creates perfect triangle sorting for all
-    // convex meshes. Sorting artifacts can still appear when you can see
-    // through more than two layers of a given mesh, but this can usually be
-    // mitigated by the author splitting the mesh into mostly convex regions.
-    // The performance cost is not too great as the same shader is reused and
-    // the same number of fragments are processed; only the vertex shader is run
-    // twice. @see https://threejs.org/examples/webgl_materials_physical_transparency.html
-    for (const mesh of meshesToDuplicate) {
-      const materials =
-          Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      const duplicateMaterials = materials.map((material) => {
-        const backMaterial = material.clone();
-        backMaterial.side = BackSide;
-        return backMaterial;
-      });
-      const duplicateMaterial = Array.isArray(mesh.material) ?
-          duplicateMaterials :
-          duplicateMaterials[0];
-      const meshBack = new Mesh(mesh.geometry, duplicateMaterial);
-      meshBack.renderOrder = -1;
-      mesh.add(meshBack);
-    }
-
-    const clone = cloneGltf(gltf);
-    const model = clone.scene ? clone.scene : null;
-
-    if (model != null) {
-      model.userData.animations = clone.animations;  // save animations
-
-      this[$evictionPolicy].retain(url);
-
-      (model as CacheRetainedScene)[$releaseFromCache] = (() => {
-        let released = false;
-        return () => {
-          if (released) {
-            return;
-          }
-
-          // We manually dispose cloned materials because Three.js keeps
-          // an internal count of materials using the same program, so it's
-          // safe to dispose of them incrementally. Geometry clones are not
-          // accounted for, so they cannot be disposed of incrementally.
-          model.traverse((object3D) => {
-            if (!(object3D as Mesh).isMesh) {
-              return;
-            }
-            const mesh = object3D as Mesh;
-            const materials =
-                Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-            materials.forEach(material => {
-              material.dispose();
-            });
-          });
-
-          this[$evictionPolicy].release(url);
-          released = true;
-        };
-      })();
-    }
-
-    return model as CacheRetainedScene | null;
+    return clone;
   }
 }
